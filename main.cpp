@@ -280,6 +280,52 @@ static bool TopEdgeVisibleAt(const WindowInfo& wv, float cx)
     return true;
 }
 
+// 精灵的底边这一帧有没有"越过"窗口顶边(越过就该落在它上面)。
+//
+// 不能直接用 prevBottom <= wr.top: 窗口矩形每 WINDOW_SCAN_SEC 才采样一次,
+// 用户快速往上拖窗口时一帧能跳几十像素, 顶边变小了之后
+// "prevBottom <= 顶边" 反而永远不成立(底边早就在新顶边下面了) ——
+// 于是窗口直接从图片身上穿过去, 这就是"窗口向上推会穿"的根因。
+//
+// 所以参照边取 max(上一拍的顶边, 这一拍的顶边):
+//   窗口静止 / 往下走 -> 参照边 == 当前顶边, 判据和原来一模一样;
+//   窗口往上走     -> 参照边 == 上一拍的顶边, "原来在顶边之上、这一拍被
+//                    吞进来" 就能被判出来, 图片会被顶到新的顶边上。
+static bool CrossesTopEdge(const WindowInfo& wv, float prevBottom, float newBottom)
+{
+    if (!wv.platform) return false;
+    const float curTop = (float)wv.rect.top;
+    const float refTop = (wv.hasPrev && (float)wv.prevRect.top > curTop)
+                       ? (float)wv.prevRect.top
+                       : curTop;
+    return (newBottom > curTop && prevBottom <= refTop);
+}
+
+// 在所有平台窗口里挑出"这一帧该落在它顶边上"的那一个(没有则 nullptr)。
+// x/w 是精灵的横向范围, prevBottom/newBottom 是底边在本帧位移前后的位置。
+//
+// 多个候选时取**顶边最高**的那个。理由:
+//   1) 正常下落时, 先碰到的当然是最高的那块平台;
+//   2) 窗口上拖把精灵吞进来时, 唯一不留下穿模的解也是最高的那条顶边 ——
+//      如果退而落到原来那块(更低的)平台上, 精灵会和已经升上来的窗口重叠,
+//      下一帧又被抢一次, 来回抽搐。
+// exclude 用来排除精灵当前正踩着的那块平台: 它由上层的"跟随"逻辑处理
+// (跟随还要带上水平位移), 不能在这里被当成"抢走"。
+static const WindowInfo* FindLandingTop(float x, float w, float prevBottom,
+                                        float newBottom, HWND exclude = nullptr)
+{
+    const WindowInfo* best = nullptr;
+    for (auto& wv : g_windowList) {
+        if (exclude && wv.hwnd == exclude) continue;
+        const RECT& wr = wv.rect;
+        if (x + w <= wr.left || x >= wr.right) continue;
+        if (!CrossesTopEdge(wv, prevBottom, newBottom)) continue;
+        if (!TopEdgeVisibleAt(wv, x + w * 0.5f)) continue;   // 顶边被压住, 不是平台
+        if (!best || wr.top < best->rect.top) best = &wv;
+    }
+    return best;
+}
+
 static void ScanWindows()
 {
     // 完整重建列表(EnumWindows 天然按 Z 序), 再回填上一次的 rect 用于算速度
@@ -832,6 +878,8 @@ static void UpdatePhysics(float dt)
                 // ---- 抛物线（被弹飞/被创飞） ----
                 s->vy += s->gravity * dt;
                 s->x  += s->vx * dt;
+
+                const float prevBottom = s->y + s->h;
                 s->y  += s->vy * dt;
                 s->life -= dt;
 
@@ -847,6 +895,20 @@ static void UpdatePhysics(float dt)
 
                 // 飞行中也要与窗口碰撞
                 CollideWithWindows(s);
+
+                // 兜底: 窗口矩形每 WINDOW_SCAN_SEC 才采样一次, 快速上拖时可能
+                // 一拍就整个跳过精灵 —— 这时 CollideWithWindows 的重叠判定
+                // 根本不成立(它要求两者仍然相交), 精灵会被留在窗口下面, 看起来
+                // 就是窗口穿了过去。这里再用 FindLandingTop 补一次:
+                // 底边这一帧确实越过了某条顶边就贴上去。
+                // 正常的抛物线落顶边不会被重复处理 —— CollideWithWindows 已经
+                // 把它摆到 y = top - h, newBottom > curTop 自然不成立。
+                if (const WindowInfo* w =
+                        FindLandingTop(s->x, (float)s->w, prevBottom, s->y + s->h))
+                {
+                    s->y = (float)w->rect.top - (float)s->h;
+                    if (s->vy > 0.0f) s->vy = -s->vy * 0.35f;
+                }
 
                 // 窗口碰撞后可能又把自己推到屏幕外，再钳制一次
                 if (s->x < 0) s->x = 0;
@@ -870,7 +932,23 @@ static void UpdatePhysics(float dt)
                     for (auto& wv : g_windowList) {
                         if (wv.hwnd == s->restingOn && wv.platform) { host = &wv; break; }
                     }
+                    // 有"别的"窗口这一拍从下面顶上来 -> 直接改站到它上面。
+                    // 只"放掉"是不行的: 原来那块平台的顶边还在原处, 下一帧又会把
+                    // 图片接回去, 于是来回抽搐。不做这一步的话, 停靠在 A 上的图片
+                    // 会被上升的 B 直接穿过去。
                     if (host) {
+                        const float myBottom = s->y + s->h;
+                        if (const WindowInfo* thief =
+                                FindLandingTop(s->x, (float)s->w, myBottom, myBottom,
+                                               s->restingOn))
+                        {
+                            s->y        = (float)thief->rect.top - (float)s->h;
+                            s->restingOn = thief->hwnd;
+                            s->vy        = 0.0f;
+                            resting      = true;
+                        }
+                    }
+                    if (host && !resting) {
                         const bool overlapX = !(s->x + s->w <= host->rect.left ||
                                                 s->x >= host->rect.right);
                         const float ny = (float)host->rect.top - (float)s->h;
@@ -903,20 +981,16 @@ static void UpdatePhysics(float dt)
                     const float prevBottom = s->y + s->h;
                     s->y += s->vy * dt;
 
-                    // 落到某个窗口"看得见"的顶边上
-                    const float cx = s->x + s->w * 0.5f;
-                    for (auto& wv : g_windowList) {
-                        if (!wv.platform) continue;
-                        const RECT& wr = wv.rect;
-                        if (s->x + s->w <= wr.left || s->x >= wr.right) continue;
-                        if (!TopEdgeVisibleAt(wv, cx)) continue;   // 顶边被压住, 不是平台
-                        const float wTop = (float)wr.top;
-                        if (s->y + s->h > wTop && prevBottom <= wTop) {
-                            s->y = wTop - s->h;
-                            s->vy = 0.0f;
-                            s->restingOn = wv.hwnd;
-                            break;
-                        }
+                    // 落到某个窗口"看得见"的顶边上。
+                    // 判定交给 FindLandingTop/CrossesTopEdge: 它们额外考虑了
+                    // "窗口自己往上冲"的情况, 否则窗口上拖时图片会直接穿过窗口
+                    // 而不是被顶上去。
+                    if (const WindowInfo* w =
+                            FindLandingTop(s->x, (float)s->w, prevBottom, s->y + s->h))
+                    {
+                        s->y         = (float)w->rect.top - (float)s->h;
+                        s->vy        = 0.0f;
+                        s->restingOn = w->hwnd;
                     }
 
                     // 3) 工作区底部
@@ -932,11 +1006,30 @@ static void UpdatePhysics(float dt)
             // ---- 碎片 / 弹丸 ----
             s->vy += s->gravity * dt;
             s->x  += s->vx * dt;
+
+            const float prevBottom = s->y + s->h;
             s->y  += s->vy * dt;
             s->life -= dt;
 
             if (s->x < 0) { s->x = 0; s->vx = -s->vx * 0.7f; }
             if (s->x + s->w > g_screenW) { s->x = (float)(g_screenW - s->w); s->vx = -s->vx * 0.7f; }
+
+            // ---- 碎片也能落在窗口顶边上 ----
+            // 和图片共用 FindLandingTop/CrossesTopEdge, 所以窗口快速上拖时碎片
+            // 同样会被顶上去, 而不是穿过去。
+            // 落地方式和"工作区底部"完全一致(弹一下、阻尼、然后停住),
+            // 而且因为判据里含上一拍的顶边, 停在窗口上的碎片会自动跟着窗口上下走。
+            // 刻意不设 restingOn: 碎片只活 1 秒左右, 不需要水平跟随。
+            if (const WindowInfo* w =
+                    FindLandingTop(s->x, (float)s->w, prevBottom, s->y + s->h))
+            {
+                s->y = (float)w->rect.top - (float)s->h;
+                if (s->vy > 0.0f) s->vy = -s->vy * 0.35f;
+                if (fabsf(s->vy) < 40.0f) s->vy = 0.0f;
+                s->vx *= 0.85f;
+                if (fabsf(s->vx) < 15.0f) s->vx = 0.0f;
+            }
+
             if (s->y < 0) { s->y = 0; s->vy = -s->vy * 0.7f; }
             if (s->y + s->h > g_screenH) {
                 s->y = (float)(g_screenH - s->h);
