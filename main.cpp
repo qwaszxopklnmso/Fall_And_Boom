@@ -51,6 +51,12 @@ static const float WINDOW_SCAN_SEC = 0.08f;   // 窗口扫描间隔
 static const float FOLLOW_MAX_VX   = 250.0f;  // 超过这个速度就不再"拖着走", 改为创飞
 static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
 
+// ---- 手动生成 ----
+// 按这个键, 在鼠标当前位置生成一张随机图片。
+// 用低级键盘钩子而不是 RegisterHotKey: 注册成热键会把这个键从所有程序那里
+// 抢走(打字、输入小数点就全废了), 钩子只是旁听, 按键照样传给别的程序。
+static const UINT  SPAWN_KEY_VK    = VK_OEM_PERIOD;   // 主键盘区的 "."
+
 static const float EXPLOSION_RADIUS    = 320.0f;  // 爆炸冲击波半径(像素)
 static const float EXPLOSION_POWER_MIN = 500.0f;  // 冲击波初速(范围边缘)
 static const float EXPLOSION_POWER_MAX = 900.0f;  // 冲击波初速(爆心附近)
@@ -543,7 +549,9 @@ static void FreeComposeBuffer()
 // ------------------------------------------------------------
 // 生成下落图片
 // ------------------------------------------------------------
-static void SpawnFalling()
+// usePos=true 时以 (px,py) 为中心生成(鼠标位置), 并夹进工作区,
+// 免得生成到屏幕外面直接看不见; 否则照旧在屏幕顶端随机横坐标生成。
+static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f)
 {
     if (g_assets.empty()) return;
     if ((int)g_sprites.size() >= MAX_TOTAL) return;
@@ -562,8 +570,17 @@ static void SpawnFalling()
 
     s->isFalling = true;
     s->isDebris  = false;
-    s->x = RandF(0.0f, (float)std::max(1, g_screenW - SPRITE_SIZE));
-    s->y = -(float)SPRITE_SIZE;
+    if (usePos) {
+        s->x = px - SPRITE_SIZE * 0.5f;
+        s->y = py - SPRITE_SIZE * 0.5f;
+        const float maxX = (float)std::max(0, g_screenW - SPRITE_SIZE);
+        const float maxY = (float)std::max(0, g_screenH - SPRITE_SIZE);
+        if (s->x < 0.0f)      s->x = 0.0f;    else if (s->x > maxX) s->x = maxX;
+        if (s->y < 0.0f)      s->y = 0.0f;    else if (s->y > maxY) s->y = maxY;
+    } else {
+        s->x = RandF(0.0f, (float)std::max(1, g_screenW - SPRITE_SIZE));
+        s->y = -(float)SPRITE_SIZE;
+    }
     s->baseFallSpeed = RandF(FALL_SPEED_MIN, FALL_SPEED_MAX);
     s->vy = s->baseFallSpeed;
     s->vx = 0.0f;
@@ -1267,6 +1284,45 @@ struct ComGuard
     ~ComGuard() { if (ok) CoUninitialize(); }
 };
 
+// ------------------------------------------------------------
+// 低级键盘钩子: 按 "." 在鼠标位置生成图片
+// ------------------------------------------------------------
+// overlay 窗口带 WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, 永远拿不到焦点,
+// 所以它收不到 WM_KEYDOWN; 而 RegisterHotKey 会把这个键从所有程序手里抢走。
+// WH_KEYBOARD_LL 钩子只是"旁听": 我们照旧 CallNextHookEx 把按键原样放行,
+// 别的程序完全不受影响。
+// 低级钩子由安装它的线程(主线程)在自己的消息循环里回调, 所以下面这几个
+// 变量不存在跨线程竞争 —— 钩子里只记一下位置, 真正的生成放在主循环里做。
+static HHOOK g_kbHook       = nullptr;
+static DWORD g_lastDotTick  = 0;       // 上次触发的时刻(去抖, 兼作滤掉长按自动重复)
+static bool  g_spawnAtMouse = false;   // 有待处理的生成请求
+static POINT g_spawnPoint   = {};
+
+// 两次触发的最小间隔(毫秒)。长按的自动重复间隔只有 ~30ms, 会被这条挡掉;
+// 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
+static const DWORD SPAWN_KEY_DEBOUNCE_MS = 250;
+
+static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam)
+{
+    if (code == HC_ACTION && lParam) {
+        const KBDLLHOOKSTRUCT* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        if (kb->vkCode == SPAWN_KEY_VK &&
+            (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
+            const DWORD now = GetTickCount();
+            if (now - g_lastDotTick >= SPAWN_KEY_DEBOUNCE_MS) {
+                g_lastDotTick = now;
+                POINT pt;
+                if (GetCursorPos(&pt)) {
+                    g_spawnPoint   = pt;
+                    g_spawnAtMouse = true;
+                }
+            }
+        }
+    }
+    // 原样放行: 别的程序该怎么收到 "." 还是怎么收到
+    return CallNextHookEx(g_kbHook, code, wParam, lParam);
+}
+
 // 退出热键候选: 默认 Ctrl+Alt+Q 被占用时自动退到下一个
 struct HotkeyDef { UINT mods; UINT vk; const wchar_t* name; };
 static const HotkeyDef kHotkeys[] = {
@@ -1394,6 +1450,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
     g_spawnTimer = 0.8f;
 
+    // ---- 装上低级键盘钩子(按 "." 在鼠标位置生成) ----
+    // 放在这里是为了让上面几条出错退出的分支不用管它。
+    // 失败也不弹窗: 只是少一个手动生成的功能, 程序照常跑。
+    g_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
+
     bool running = true;
     MSG msg = {};
     while (running)
@@ -1420,6 +1481,16 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
         UpdateAnimations(dt);
 
+        // ---- 按 "." 在鼠标位置生成一张随机图片 ----
+        // 钩子回调里只记了位置, 真正干活放在这里。
+        // 鼠标坐标是屏幕坐标, 减去 overlay 原点换成合成缓冲坐标。
+        if (g_spawnAtMouse) {
+            g_spawnAtMouse = false;
+            SpawnFalling(true,
+                         (float)(g_spawnPoint.x - g_workX),
+                         (float)(g_spawnPoint.y - g_workY));
+        }
+
         g_spawnTimer -= dt;
         if (g_spawnTimer <= 0.0f) {
             SpawnFalling();
@@ -1433,6 +1504,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     }
 
     g_sprites.clear();
+
+    if (g_kbHook) { UnhookWindowsHookEx(g_kbHook); g_kbHook = nullptr; }
 
     for (auto& a : g_assets) {
         delete a->bmp;

@@ -19,6 +19,7 @@ Windows 桌面小玩具：图片从屏幕顶端掉落，落到窗口顶边会停
   但它**落在工作区里的那条侧边仍然是墙**，弹飞的图片会撞在上面
 - 爆炸产生冲击波，把半径内的其它图片一起炸飞（被炸飞不变浅）
 - 爆炸前 3 秒开始闪烁，0.6 秒一个周期
+- **按 `.` 在鼠标位置立刻生成一张随机图片**（不用等自动生成）
 - 光标完全穿透，不抢焦点
 
 ## z-band 窗口（为什么开始菜单要单独处理）
@@ -90,11 +91,28 @@ cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
 | `EXPLODE_BLINK_PERIOD` | 0.6 | 闪烁周期（秒） |
 | `HIT_FLASH_SEC` / `HIT_DIM` | 0.40 / 0.50 | 被撞后闪光的时长 / 最浅 alpha |
 | `SPRITE_SIZE` | 48 | 图片缩放到的边长（像素） |
+| `SPAWN_KEY_VK` | `VK_OEM_PERIOD` | 手动生成的按键（主键盘区 `.`） |
+| `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动生成的去抖间隔（毫秒） |
 | `MAX_IMAGES` | 10 | 最多加载几张图片 |
 | `MAX_FALLING` / `MAX_TOTAL` | 20 / 220 | 同屏下落中 / 精灵总数上限 |
 | `EXPLOSION_RADIUS` | 150.0 | 爆炸冲击波半径（像素） |
 | `FALL_SPEED_MIN` / `_MAX` | 260 / 600 | 下落速度范围（像素/秒） |
 | `WINDOW_SCAN_SEC` | 0.08 | 窗口位置采样间隔（秒） |
+
+## 手动生成（按 `.`）
+
+主键盘区的 `.` 每按一次就在鼠标当前位置生成一张随机图片（以光标为中心，
+会夹进工作区，不会生成到屏幕外）。长按的自动重复会被 250ms 去抖挡掉。
+
+实现上不能用 `RegisterHotKey`：那会把这个键从**所有程序**手里抢走，
+打字、输入小数点就全废了。也不能靠 `WM_KEYDOWN` —— overlay 窗口带
+`WS_EX_NOACTIVATE | WS_EX_TRANSPARENT`，永远拿不到焦点。
+所以这里装的是 `WH_KEYBOARD_LL` 低级键盘钩子：全局看得见，
+但每次都 `CallNextHookEx` 把按键原样放行，别的程序完全不受影响。
+
+钩子回调里**只记录光标位置**，真正的生成放在主循环里做，避免在钩子里
+做内存分配（低级钩子回调超时会被系统悄悄摘掉）。
+要换键就改 `main.cpp` 里的 `SPAWN_KEY_VK`（默认 `VK_OEM_PERIOD`）。
 
 ## 退出
 
