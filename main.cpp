@@ -825,117 +825,112 @@ static void ApplyExplosionShockwave(float cx, float cy)
 
 // ------------------------------------------------------------
 // 通用：与窗口进行 AABB 碰撞（供抛物线状态使用）
-// prevBottom 是精灵本帧位移之前的底边位置, 用来判断它是从上方进来的。
+// prevX / prevBottom 是精灵本帧位移之前的位置 —— 光有"现在重叠了"是不够的,
+// 必须知道它是从哪一面进来的。
 // ------------------------------------------------------------
-static void CollideWithWindows(Sprite* s, float prevBottom)
+static void CollideWithWindows(Sprite* s, float prevX, float prevBottom)
 {
+    const float prevTop   = prevBottom - (float)s->h;      // 精灵上一拍的顶边
+    const float prevRight = prevX + (float)s->w;           // 精灵上一拍的右边缘
+    const float newBottom = s->y + (float)s->h;
+    const float newRight  = s->x + (float)s->w;
+
     for (auto& wv : g_windowList) {
         const RECT& wr = wv.rect;
-        if (s->x + s->w <= wr.left || s->x >= wr.right) continue;
-        if (s->y + s->h <= wr.top  || s->y >= wr.bottom) continue;
+        if (newRight <= (float)wr.left || s->x >= (float)wr.right) continue;
+        if (newBottom <= (float)wr.top  || s->y >= (float)wr.bottom) continue;
 
         // 四个方向的穿透深度
-        float pTop    = (s->y + s->h) - wr.top;
-        float pBottom = wr.bottom - s->y;
-        float pLeft   = (s->x + s->w) - wr.left;
-        float pRight  = wr.right - s->x;
+        const float pTop    = newBottom - (float)wr.top;
+        const float pBottom = (float)wr.bottom - s->y;
+        const float pLeft   = newRight - (float)wr.left;
+        const float pRight  = (float)wr.right - s->x;
 
-        // ---- 优先: 从上方越过顶边进来的, 一律顶回顶边上面 ----
-        // 这是"用窗口上缘推图片时, 图片会瞬移到窗口下方/侧方"的根因:
-        // 最小穿透深度只看"离哪条边近", 不看图片是从哪进来的。图片贴着窗口
-        // 左/右边缘时 pLeft/pRight 比 pTop 小, 就被甩到窗口侧面; 贴着窗口底边时
-        // pBottom 最小, 就被甩到窗口下方 —— 视觉上就是直接穿过窗口。
-        // 而且和拖动快慢完全无关, 慢速一样错。
+        // ---- 参照矩形: 这一拍和上一拍"并起来"的那一层 ----
+        // 窗口矩形每 WINDOW_SCAN_SEC 才采样一次, 快速拖动时一帧能跳几十像素。
+        // 只拿当前矩形判"上一拍在外面"是判不出来的(窗口一冲, 上一拍的位置早就
+        // 不在当前矩形里了), 所以窗口动过的那条边要用上一拍的位置。
+        const float refTop    = (wv.hasPrev && (float)wv.prevRect.top    > (float)wr.top)    ? (float)wv.prevRect.top    : (float)wr.top;
+        const float refBottom = (wv.hasPrev && (float)wv.prevRect.bottom < (float)wr.bottom) ? (float)wv.prevRect.bottom : (float)wr.bottom;
+        const float refLeft   = (wv.hasPrev && (float)wv.prevRect.left   < (float)wr.left)   ? (float)wv.prevRect.left   : (float)wr.left;
+        const float refRight  = (wv.hasPrev && (float)wv.prevRect.right  > (float)wr.right)  ? (float)wv.prevRect.right  : (float)wr.right;
+
+        // ---- 上一拍这个精灵在窗口的哪一面 ----
+        const bool wasLeft  = (prevRight <= refLeft);
+        const bool wasRight = (prevX     >= refRight);
+        const bool wasAbove = (prevBottom <= refTop);
+        const bool wasBelow = (prevTop   >= refBottom);
+        const bool inX      = !wasLeft && !wasRight;   // 上一拍横向就和窗口重叠了
+
+        // ---- 按"从哪一面进来"解算, 而不是按"离哪条边近" ----
+        // 最小穿透深度只看距离、不看来向, 所以贴着左/右边缘的图片会被甩到侧面、
+        // 贴着底边的会被甩到下方 —— 视觉上就是"直接穿过窗口", 跟快慢无关。
         //
-        // 三个前提:
-        //   · 顶边上面放得下这个精灵(TopEdgeFits)。放不下就不硬塞 —— 塞进去
-        //     只会被钳到 y=0, 变成"卡在屏幕最上方不下落"。
-        //   · 顶边没被更高 Z 序窗口压住(那不是个能站的地方)。
-        // 不满足就退到下面的最小穿透深度, 而那边的穿透深度上界会保证它
-        // 不会把精灵整个挪到另一条边上去。
-        if (TopEdgeFits(wv, s->h) &&
-            (SweptDownPastTop(wv, prevBottom, s->y + s->h) ||
-             RisingTopLifts(wv, s->h, prevBottom, s->y + s->h)) &&
-            TopEdgeVisibleAt(wv, s->x + s->w * 0.5f))
-        {
+        // 四个面是互斥的(上一拍只可能在窗口外面的一侧), 所以这里最多只有一个为真,
+        // 不会出现"侧边撞的却按顶边解"。
+        //
+        // "从上面进来"必须额外要求 inX: 上一拍横向就已经和窗口重叠。
+        // 少了这一条, 一个被窗口**侧边**撞到、位置恰好在窗口上半部分的图片,
+        // 会因为"窗口这一拍正好也往上走了"而满足之前的宽松顶边判据,
+        // 被瞬移到窗口顶上。
+        const bool fromTop    = inX && wasAbove && (newBottom > (float)wr.top);
+        const bool fromBottom = wasBelow && (s->y < (float)wr.bottom);
+        const bool fromLeft   = wasLeft  && (newRight > (float)wr.left);
+        const bool fromRight  = wasRight && (s->x < (float)wr.right);
+
+        int axis = -1;              // 0=上方 1=下方 2=左侧 3=右侧
+        if      (fromTop)    axis = 0;
+        else if (fromBottom) axis = 1;
+        else if (fromLeft)   axis = 2;
+        else if (fromRight)  axis = 3;
+
+        if (axis < 0) {
+            // ---- 上一拍就已经在窗口肚子里了 -> 退回最小穿透, 但要带护栏 ----
+            // 顶边: 上面放得下这个精灵才算(TopEdgeFits)。
+            // 其余边: 必须在工作区内; 而且穿透深度不能超过一个身位, 否则
+            //         "最小穿透"会把一个本来就待在窗口肚子里的精灵整个挪到
+            //         另一条边上去 —— 这正是"瞬移到窗口下方/侧方"。
+            //         深陷其中的干脆不解析, 让它按物理自己落出去。
+            //         例: 通知中心 (2200,0)-(2560,1392) 的右边和底边都贴着工作区
+            //         边界, 只有左边的竖边是"实墙"。
+            // 窗口底边: 只认"精灵相对窗口在往上走"(从下面撞上来)。不加这一条,
+            //         一个往下穿过窗口的精灵会在退出底边的瞬间被"啪"地按到
+            //         wr.bottom 上, 看起来就是无端跳一下。
+            const float relVy = s->vy -
+                (wv.hasPrev ? (float)(wv.rect.top - wv.prevRect.top) / g_scanDt : 0.0f);
+            const bool okTop    = TopEdgeFits(wv, s->h) && TopEdgeVisibleAt(wv, s->x + s->w * 0.5f);
+            const bool okBottom = (wr.bottom < g_screenH) && (pBottom <= (float)s->h) &&
+                                  (relVy < 0.0f);
+            const bool okLeft   = (wr.left   > 0)         && (pLeft   <= (float)s->w);
+            const bool okRight  = (wr.right  < g_screenW) && (pRight  <= (float)s->w);
+
+            float minP = 0.0f;
+            if (okTop)               { minP = pTop;    axis = 0; }
+            if (okBottom && (axis < 0 || pBottom < minP)) { minP = pBottom; axis = 1; }
+            if (okLeft   && (axis < 0 || pLeft   < minP)) { minP = pLeft;   axis = 2; }
+            if (okRight  && (axis < 0 || pRight  < minP)) { minP = pRight;  axis = 3; }
+            if (axis < 0) continue;            // 四条边都不算数 -> 当作背景
+        }
+
+        if (axis == 0) {
+            // 从上方落到窗口顶部
             s->y = (float)wr.top - (float)s->h;
             if (s->vy > 0.0f) s->vy = -s->vy * 0.35f;
             if (fabsf(s->vy) < 50.0f) s->vy = 0.0f;
             s->vx *= 0.85f;
             if (fabsf(s->vx) < 20.0f) s->vx = 0.0f;
-            break;
-        }
-
-        // ---- 只考虑"真的在屏幕里"、而且"真的刚穿过去"的边 ----
-        // 顶边: 上面放得下这个精灵才算(TopEdgeFits)。
-        // 其余边: 必须在工作区内; 而且穿透深度不能超过一个身位。
-        //       穿透深度不受限的话, "最小穿透深度"会把一个本来就待在窗口肚子里的
-        //       精灵整个挪到另一条边上去 —— 这正是"瞬移到窗口下方/侧方"。
-        //       只认"这一帧刚穿过去"的边(穿透 <= 一个身位); 深陷其中的精灵
-        //       干脆不解析, 让它按物理自己落出去。
-        //       例: 通知中心 (2200,0)-(2560,1392) 的右边和底边都贴着工作区边界,
-        //       只有左边的竖边是"实墙"。
-        // 窗口底边: 只认"精灵相对窗口在往上走", 也就是它是从下面撞上来的。
-        // 不加这一条的话, 一个往下穿过窗口的精灵会在退出窗口底边的瞬间被
-        // "啪"地按到 wr.bottom 上(最多弹一个身位), 看起来就是无端跳一下。
-        const float relVy = s->vy -
-            (wv.hasPrev ? (float)(wv.rect.top - wv.prevRect.top) / g_scanDt : 0.0f);
-        const bool okTop    = TopEdgeFits(wv, s->h);
-        const bool okBottom = (wr.bottom < g_screenH) && (pBottom <= (float)s->h) &&
-                              (relVy < 0.0f);
-        const bool okLeft   = (wr.left   > 0)         && (pLeft   <= (float)s->w);
-        const bool okRight  = (wr.right  < g_screenW) && (pRight  <= (float)s->w);
-
-        float minP = 0.0f;
-        int axis = -1; // 0=上方 1=下方 2=左侧 3=右侧
-        if (okTop)               { minP = pTop;    axis = 0; }
-        if (okBottom && (axis < 0 || pBottom < minP)) { minP = pBottom; axis = 1; }
-        if (okLeft   && (axis < 0 || pLeft   < minP)) { minP = pLeft;   axis = 2; }
-        if (okRight  && (axis < 0 || pRight  < minP)) { minP = pRight;  axis = 3; }
-        if (axis < 0) continue;                // 四条边都不在屏幕里 -> 当作背景
-
-        // ---- 窗口自己在水平滑动时, 强制按水平轴解算 ----
-        // 窗口矩形每 WINDOW_SCAN_SEC(0.1s) 才采样一次, 快速拖动时一帧能跳几十像素,
-        // 此时"最小穿透轴"会突然从水平变成垂直, 精灵会被甩到窗口的上/下边缘。
-        // 只在精灵确实是"刚从这个侧面被挤进来"时才改判(水平穿透不超过一个身位),
-        // 并且贴顶边的情况(axis==0, 正站在窗口上)完全不受影响。
-        if (wv.hasPrev && axis != 0) {
-            const float wdx = (float)(wv.rect.left - wv.prevRect.left);
-            const float wdy = (float)(wv.rect.top  - wv.prevRect.top);
-            if (fabsf(wdx) > 2.0f && fabsf(wdx) >= fabsf(wdy)) {
-                const int   want = (wdx > 0.0f) ? 2 : 3;   // 窗口右移 -> 用左面推
-                const bool  ok   = (want == 2) ? okLeft : okRight;
-                const float pen  = (want == 2) ? pLeft : pRight;
-                if (ok && pen > 0.0f && pen <= (float)s->w) axis = want;
-            }
-        }
-
-        if (axis == 0) {
-            // 顶边被更高 Z 序窗口压住的那一段不是平台, 不要在这一格停下
-            if (!TopEdgeVisibleAt(wv, s->x + s->w * 0.5f)) continue;
-
-            // 从上方落到窗口顶部
-            s->y = (float)wr.top - s->h;
-            if (s->vy > 0) {
-                s->vy = -s->vy * 0.35f;
-                if (fabsf(s->vy) < 50.0f) s->vy = 0.0f;
-            }
-            s->vx *= 0.85f;
-            if (fabsf(s->vx) < 20.0f) s->vx = 0.0f;
         } else if (axis == 1) {
             // 从下方撞到窗口底部
             s->y = (float)wr.bottom;
-            if (s->vy < 0) s->vy = -s->vy * 0.4f;
+            if (s->vy < 0.0f) s->vy = -s->vy * 0.4f;
         } else if (axis == 2) {
-            // pLeft 最小 = 精灵右边缘刚越过窗口左边缘 -> 精灵是从左边进来的,
-            // 应该推回窗口左侧。原来写成了 wr.right, 于是精灵会瞬间穿到窗口另一头。
-            s->x = (float)wr.left - s->w;
-            if (s->vx > 0) s->vx = -s->vx * 0.5f;
+            // 精灵是从左边进来的 -> 推回窗口左侧
+            s->x = (float)wr.left - (float)s->w;
+            if (s->vx > 0.0f) s->vx = -s->vx * 0.5f;
         } else {
-            // pRight 最小 = 窗口右边缘刚越过精灵左边缘 -> 精灵是从右边进来的,
-            // 应该推回窗口右侧。原来写成了 wr.left - s->w, 同样是穿到另一头。
+            // 精灵是从右边进来的 -> 推回窗口右侧
             s->x = (float)wr.right;
-            if (s->vx < 0) s->vx = -s->vx * 0.5f;
+            if (s->vx < 0.0f) s->vx = -s->vx * 0.5f;
         }
         break; // 一帧只处理一次窗口碰撞
     }
@@ -992,6 +987,7 @@ static void UpdatePhysics(float dt)
             if (s->gravity > 0.0f) {
                 // ---- 抛物线（被弹飞/被创飞） ----
                 s->vy += s->gravity * dt;
+                const float prevX = s->x;
                 s->x  += s->vx * dt;
 
                 const float prevBottom = s->y + s->h;
@@ -1009,7 +1005,7 @@ static void UpdatePhysics(float dt)
                 }
 
                 // 飞行中也要与窗口碰撞
-                CollideWithWindows(s, prevBottom);
+                CollideWithWindows(s, prevX, prevBottom);
 
                 // 兜底: 窗口矩形每 WINDOW_SCAN_SEC 才采样一次, 快速上拖时可能
                 // 一拍就整个跳过精灵 —— 这时 CollideWithWindows 的重叠判定
