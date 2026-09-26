@@ -47,6 +47,11 @@ static const float WINDOW_SCAN_SEC = 0.10f;   // 窗口扫描间隔
 static const float FOLLOW_MAX_VX   = 250.0f;  // 超过这个速度就不再"拖着走", 改为创飞
 static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
 
+static const float EXPLOSION_RADIUS    = 150.0f;  // 爆炸冲击波半径(像素)
+static const float EXPLOSION_POWER_MIN = 260.0f;  // 冲击波初速(范围边缘)
+static const float EXPLOSION_POWER_MAX = 640.0f;  // 冲击波初速(爆心附近)
+static const float EXPLOSION_GRAVITY   = 1300.0f; // 被炸飞之后的重力
+
 // ------------------------------------------------------------
 // 全局
 // ------------------------------------------------------------
@@ -101,8 +106,14 @@ struct WindowInfo {
     HWND hwnd = nullptr;
     RECT rect{};
     RECT prevRect{};
-    bool hasPrev    = false;
-    bool fullscreen = false;   // 全屏/无边框全屏: 参与遮挡判定, 但不当作平台
+    bool hasPrev = false;
+    // 能否当作"平台"。以下两种窗口不能:
+    //   1) 全屏 / 无边框全屏 —— 铺满显示器, 没有有意义的顶边
+    //   2) 顶边在屏幕上方 —— 例如最大化窗口(GetWindowRect.Top 通常是 -7),
+    //      图片停上去会被摆到 y<0, 直接看不见
+    // 但它们**都必须继续参与遮挡判定**: 一旦丢掉, 它们背后被完全遮盖的窗口
+    // 就会被误判成可见平台, 出现穿模的物理碰撞。
+    bool platform = true;
     // Z 序更高的窗口压在本窗口上的矩形(交集)。用来判断"顶边哪一段真的看得见"
     std::vector<RECT> occluders;
 };
@@ -131,7 +142,11 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     RECT r;
     if (!GetWindowRect(hwnd, &r)) return TRUE;
     if (r.right <= r.left || r.bottom <= r.top) return TRUE;
-    if (r.top < 0 || r.top >= g_screenH) return TRUE;
+    // 只有"完全落在工作区上下方之外"的窗口才能直接丢掉。
+    // 注意不能写成 r.top < 0: 最大化窗口的 GetWindowRect 会把不可见的
+    // DWM 调整边框算进去(Top 常为 -7), 那样会把正在铺满屏幕的窗口丢掉,
+    // 导致它背后被完全遮盖的窗口重新获得物理碰撞。
+    if (r.top >= g_screenH || r.bottom <= 0) return TRUE;
 
     // ---- 全屏 / 无边框窗口化全屏 判定 ----
     // 这类窗口铺满整个显示器。它仍然要参与下面的"遮挡过滤"，
@@ -164,12 +179,12 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     }
 
     WindowInfo wi;
-    wi.hwnd       = hwnd;
-    wi.rect       = r;
-    wi.prevRect   = r;
-    wi.hasPrev    = false;
-    wi.fullscreen = fullscreen;
-    wi.occluders  = std::move(occ);
+    wi.hwnd      = hwnd;
+    wi.rect      = r;
+    wi.prevRect  = r;
+    wi.hasPrev   = false;
+    wi.platform  = (!fullscreen && r.top >= 0);
+    wi.occluders = std::move(occ);
     list->push_back(std::move(wi));
     return TRUE;
 }
@@ -529,12 +544,51 @@ static void SpawnDebris(Sprite* s, std::vector<std::unique_ptr<Sprite>>& out)
 }
 
 // ------------------------------------------------------------
+// 爆炸冲击波: 把半径内的其它精灵一起炸飞
+// 注意: 这里刻意不碰 fadeStartLife —— 被炸飞不应该让图片变浅。
+//       (窗口"创飞"是会变浅的, 冲击波不会, 两者行为不同)
+// ------------------------------------------------------------
+static void ApplyExplosionShockwave(float cx, float cy)
+{
+    for (auto& sp : g_sprites) {
+        Sprite* s = sp.get();
+        if (s->dead || !s->src) continue;
+
+        float dx = (s->x + s->w * 0.5f) - cx;
+        float dy = (s->y + s->h * 0.5f) - cy;
+        float d  = std::sqrt(dx * dx + dy * dy);
+        if (d > EXPLOSION_RADIUS) continue;
+
+        if (d < 1.0f) {
+            // 正好压在爆心上, 给一个随机朝上的方向
+            dx = RandF(-1.0f, 1.0f);
+            dy = -1.0f;
+            d  = std::sqrt(dx * dx + dy * dy);
+            if (d < 0.001f) { dx = 0.0f; dy = -1.0f; d = 1.0f; }
+        }
+
+        // 越靠近爆心越猛
+        const float t = 1.0f - d / EXPLOSION_RADIUS;
+        const float power = EXPLOSION_POWER_MIN +
+                            (EXPLOSION_POWER_MAX - EXPLOSION_POWER_MIN) * t;
+
+        s->vx = dx / d * power + RandF(-40.0f, 40.0f);
+        s->vy = dy / d * power - RandF(40.0f, 140.0f);   // 整体略微上扬
+        s->gravity   = EXPLOSION_GRAVITY;
+        s->restingOn = nullptr;      // 从平台上掀下来
+
+        // 下落中的图片: gravity > 0 会把它切到抛物线分支;
+        // 碎片本来就吃 gravity/vx/vy, 直接生效。
+    }
+}
+
+// ------------------------------------------------------------
 // 通用：与窗口进行 AABB 碰撞（供抛物线状态使用）
 // ------------------------------------------------------------
 static void CollideWithWindows(Sprite* s)
 {
     for (auto& wv : g_windowList) {
-        if (wv.fullscreen) continue;          // 全屏窗口不当作平台
+        if (!wv.platform) continue;           // 全屏 / 顶边在屏幕外 -> 不当作平台
         const RECT& wr = wv.rect;
         if (s->x + s->w <= wr.left || s->x >= wr.right) continue;
         if (s->y + s->h <= wr.top  || s->y >= wr.bottom) continue;
@@ -605,7 +659,7 @@ static void UpdatePhysics(float dt)
             // 被快速水平移动的窗口"创飞"
             if (s->gravity == 0.0f) {
                 for (auto& wv : g_windowList) {
-                    if (!wv.hasPrev || wv.fullscreen) continue;
+                    if (!wv.hasPrev || !wv.platform) continue;
                     // 窗口位置是每 0.1s 采样一次的, 必须用扫描间隔换算速度;
                     // 用每帧 dt 会把速度放大 5~6 倍, 导致图片被轻微移动的窗口"创飞"
                     float winVx = (float)(wv.rect.left - wv.prevRect.left) / g_scanDt;
@@ -666,7 +720,7 @@ static void UpdatePhysics(float dt)
                 if (s->restingOn) {
                     const WindowInfo* host = nullptr;
                     for (auto& wv : g_windowList) {
-                        if (wv.hwnd == s->restingOn && !wv.fullscreen) { host = &wv; break; }
+                        if (wv.hwnd == s->restingOn && wv.platform) { host = &wv; break; }
                     }
                     if (host) {
                         const bool overlapX = !(s->x + s->w <= host->rect.left ||
@@ -704,7 +758,7 @@ static void UpdatePhysics(float dt)
                     // 落到某个窗口"看得见"的顶边上
                     const float cx = s->x + s->w * 0.5f;
                     for (auto& wv : g_windowList) {
-                        if (wv.fullscreen) continue;
+                        if (!wv.platform) continue;
                         const RECT& wr = wv.rect;
                         if (s->x + s->w <= wr.left || s->x >= wr.right) continue;
                         if (!TopEdgeVisibleAt(wv, cx)) continue;   // 顶边被压住, 不是平台
@@ -841,6 +895,10 @@ static void UpdatePhysics(float dt)
             sp->dead = true;
         }
     }
+
+    // ---- 爆炸冲击波: 把范围内的其它精灵炸飞(不变浅), 再生成自己的碎片 ----
+    for (Sprite* s : toExplode)
+        ApplyExplosionShockwave(s->x + s->w * 0.5f, s->y + s->h * 0.5f);
 
     std::vector<std::unique_ptr<Sprite>> pending;
     for (Sprite* s : toExplode)
