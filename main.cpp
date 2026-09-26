@@ -83,10 +83,6 @@ enum SpawnKind { SPAWN_RANDOM = 0, SPAWN_BLOCK, SPAWN_EXPLOSIVE, SPAWN_KIND_COUN
 // 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
 static DWORD SPAWN_KEY_DEBOUNCE_MS = 250;
 
-// 碰撞反馈: 闪一下再恢复(不再按剩余寿命长时间发灰)
-static float HIT_FLASH_SEC = 0.40f;   // "闪一下"的总时长(秒)
-static float HIT_DIM       = 0.50f;   // 闪到最浅时的 alpha
-
 // ---- 方块 blocks (images\blocks) ----
 // 方块**没有引信**: 不会自己爆炸, 也不会闪。
 // 它只会被爆炸波及 —— 爆炸范围内的方块会被炸成碎片(见 BLOCK_DESTROY_IN_BLAST),
@@ -101,6 +97,9 @@ static float BLOCK_FALL_SPEED_MAX   = 700.0f; // 方块下落速度上限(像素
 static float BLOCK_STAY_SEC         = 12.0f;  // 停稳后停留几秒消失(0 = 一直留着)
 static float BLOCK_FADE_SEC         = 1.5f;   // 消失前的淡出时长(秒)
 static bool  BLOCK_DESTROY_IN_BLAST = true;   // ★ 爆炸范围内的方块会被炸掉
+// 碰撞反馈: 被撞/被创飞时"闪一下"再恢复(不再按剩余寿命长时间发灰)
+static float BLOCK_HIT_FLASH_SEC    = 0.40f;  // 方块"闪一下"的总时长(秒, 0 = 不闪)
+static float BLOCK_HIT_DIM          = 0.50f;  // 方块闪到最浅时的 alpha
 
 // ---- 爆炸物 explosives (images\explosives) ----
 static bool  EXPLOSIVES_ENABLED       = true; // ★ 关掉就只剩方块
@@ -109,6 +108,8 @@ static int   EXPLOSIVE_SIZE           = 48;   // 爆炸物显示边长(像素)
 static float EXPLOSIVE_SPAWN_WEIGHT   = 1.0f; // ★ 生成权重, 和方块按比例随机
 static float EXPLOSIVE_FALL_SPEED_MIN = 450.0f; // 爆炸物下落速度下限(像素/秒)
 static float EXPLOSIVE_FALL_SPEED_MAX = 700.0f; // 爆炸物下落速度上限(像素/秒)
+static float EXPLOSIVE_HIT_FLASH_SEC  = 0.40f;  // 爆炸物"闪一下"的总时长(秒, 0 = 不闪)
+static float EXPLOSIVE_HIT_DIM        = 0.50f;  // 爆炸物闪到最浅时的 alpha
 
 static float EXPLOSIVE_LIFE_SEC   = 5.0f;   // ★ 引信: 生成后几秒爆炸
 static float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁
@@ -201,8 +202,6 @@ static const CfgEntry kCfgTable[] = {
     { L"MAX_TOTAL",             CFG_INT,   &MAX_TOTAL,             L"精灵总数上限(含爆炸碎片)", 0 },
     { L"DEBRIS_COLS",           CFG_INT,   &DEBRIS_COLS,           L"爆炸碎片列数", 0 },
     { L"DEBRIS_ROWS",           CFG_INT,   &DEBRIS_ROWS,           L"爆炸碎片行数", 0 },
-    { L"HIT_FLASH_SEC",         CFG_FLOAT, &HIT_FLASH_SEC,         L"被撞后\"闪一下\"的时长, 秒", 0 },
-    { L"HIT_DIM",               CFG_FLOAT, &HIT_DIM,               L"闪到最浅时的 alpha, 0~1", 0 },
     { L"AUTO_SPAWN_ENABLED",    CFG_BOOL,  &AUTO_SPAWN_ENABLED,    L"自动随机下落 true / false", 0 },
     { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"按下面两节里配的键手动生成 true / false", 0 },
     { L"SPAWN_KEY_DEBOUNCE_MS", CFG_UINT,  &SPAWN_KEY_DEBOUNCE_MS, L"同一个键两次触发的最小间隔, 毫秒(挡长按重复)", 0 },
@@ -218,6 +217,8 @@ static const CfgEntry kCfgTable[] = {
     { L"BLOCK_STAY_SEC",         CFG_FLOAT, &BLOCK_STAY_SEC,         L"方块停稳后停留几秒消失(淡出, 不爆炸); 0 = 一直留着", 1 },
     { L"BLOCK_FADE_SEC",         CFG_FLOAT, &BLOCK_FADE_SEC,         L"方块消失前的淡出时长, 秒(0 = 直接不见)", 1 },
     { L"BLOCK_DESTROY_IN_BLAST", CFG_BOOL,  &BLOCK_DESTROY_IN_BLAST, L"爆炸范围内的方块会被炸掉 true / false", 1 },
+    { L"BLOCK_HIT_FLASH_SEC",    CFG_FLOAT, &BLOCK_HIT_FLASH_SEC,    L"方块被撞后\"闪一下\"的时长, 秒(0 = 不闪)", 1 },
+    { L"BLOCK_HIT_DIM",          CFG_FLOAT, &BLOCK_HIT_DIM,          L"方块闪到最浅时的 alpha, 0~1(1 = 看不出闪)", 1 },
 
     // ---------------- 爆炸物 explosives ----------------
     { L"EXPLOSIVES_ENABLED",       CFG_BOOL,  &EXPLOSIVES_ENABLED,       L"false = 完全不生成爆炸物(explosives 文件夹也不会读)", 2 },
@@ -227,6 +228,8 @@ static const CfgEntry kCfgTable[] = {
     { L"EXPLOSIVE_SPAWN_KEY",      CFG_KEY,   &EXPLOSIVE_SPAWN_KEY_VK,   L"按这个键在鼠标位置生成一个爆炸物(一个字符或虚拟键码数字)", 2 },
     { L"EXPLOSIVE_FALL_SPEED_MIN", CFG_FLOAT, &EXPLOSIVE_FALL_SPEED_MIN, L"爆炸物下落速度下限, 像素/秒", 2 },
     { L"EXPLOSIVE_FALL_SPEED_MAX", CFG_FLOAT, &EXPLOSIVE_FALL_SPEED_MAX, L"爆炸物下落速度上限, 像素/秒", 2 },
+    { L"EXPLOSIVE_HIT_FLASH_SEC",  CFG_FLOAT, &EXPLOSIVE_HIT_FLASH_SEC,  L"爆炸物被撞后\"闪一下\"的时长, 秒(0 = 不闪)", 2 },
+    { L"EXPLOSIVE_HIT_DIM",        CFG_FLOAT, &EXPLOSIVE_HIT_DIM,        L"爆炸物闪到最浅时的 alpha, 0~1(1 = 看不出闪)", 2 },
     { L"EXPLOSIVE_LIFE_SEC",       CFG_FLOAT, &EXPLOSIVE_LIFE_SEC,       L"引信: 生成后几秒自己爆炸", 2 },
     { L"EXPLODE_WARN_SEC",         CFG_FLOAT, &EXPLODE_WARN_SEC,         L"爆炸前多少秒开始闪烁(比引信长也没关系, 会自动截断)", 2 },
     { L"EXPLODE_BLINK_PERIOD",     CFG_FLOAT, &EXPLODE_BLINK_PERIOD,     L"闪烁周期, 秒", 2 },
@@ -512,6 +515,8 @@ static void SanitizeConfig()
         std::swap(BLOCK_FALL_SPEED_MAX, BLOCK_FALL_SPEED_MIN);
     clampF(BLOCK_STAY_SEC, 0.0f, 36000.0f);
     clampF(BLOCK_FADE_SEC, 0.0f, 600.0f);
+    clampF(BLOCK_HIT_FLASH_SEC, 0.0f, 60.0f);
+    clampF(BLOCK_HIT_DIM,       0.0f, 1.0f);
 
     // ---- 爆炸物 ----
     clampI(EXPLOSIVE_MAX_IMAGES, 1, 512);
@@ -528,8 +533,8 @@ static void SanitizeConfig()
     if (EXPLOSION_POWER_MAX < EXPLOSION_POWER_MIN) std::swap(EXPLOSION_POWER_MAX, EXPLOSION_POWER_MIN);
     clampF(EXPLOSION_GRAVITY, -20000.0f, 20000.0f);
 
-    clampF(HIT_FLASH_SEC, 0.0f, 60.0f);
-    clampF(HIT_DIM,       0.0f, 1.0f);
+    clampF(EXPLOSIVE_HIT_FLASH_SEC, 0.0f, 60.0f);
+    clampF(EXPLOSIVE_HIT_DIM,       0.0f, 1.0f);
 
     clampF(EXPLODE_WARN_SEC,    0.0f, 3600.0f);
     clampF(EXPLODE_BLINK_PERIOD, 0.02f, 600.0f);
@@ -1005,6 +1010,17 @@ static std::unique_ptr<Sprite> MakeSprite(Bitmap* src, int rx, int ry, int rw, i
     s->srcW = rw;    s->srcH = rh;
     s->w = rw;       s->h = rh;
     return s;
+}
+
+// 碰撞闪烁的时长 / 最浅 alpha —— 方块和爆炸物各一套配置。
+// 触发和还原都必须走这两个函数: 两类的时长不一样, 用错常数就会闪到一半卡住。
+static float HitFlashSec(const Sprite* s)
+{
+    return s->isBlock ? BLOCK_HIT_FLASH_SEC : EXPLOSIVE_HIT_FLASH_SEC;
+}
+static float HitDim(const Sprite* s)
+{
+    return s->isBlock ? BLOCK_HIT_DIM : EXPLOSIVE_HIT_DIM;
 }
 
 // ------------------------------------------------------------
@@ -1567,7 +1583,7 @@ static void UpdatePhysics(float dt)
                     s->vy = -320.0f;
                     s->gravity = 1500.0f;
                     s->restingOn = nullptr;
-                    s->hitFlash  = HIT_FLASH_SEC;   // 闪一下, 不再长时间变浅
+                    s->hitFlash  = HitFlashSec(s);   // 闪一下, 不再长时间变浅
                     // 被窗口以特别快的速度撞飞 -> 引信缩短(方块没有引信, 不受影响)
                     if (!s->isBlock && fabsf(winVx) >= FAST_HIT_SPEED)
                         s->life -= FAST_HIT_LIFE_LOSS;
@@ -1794,18 +1810,25 @@ static void UpdatePhysics(float dt)
         }
 
         // (2) 被撞/被弹 -> 快速闪一下再恢复。
-        //     三角形包络: 前半段压到 HIT_DIM, 后半段回到全不透明,
+        //     三角形包络: 前半段压到 HitDim(), 后半段回到全不透明,
         //     不再按剩余寿命慢慢发灰。
+        //     时长/最浅 alpha 都按精灵自己的类别取(方块和爆炸物各一套配置)。
         if (s->hitFlash > 0.0f) {
-            float t = 1.0f - s->hitFlash / HIT_FLASH_SEC;   // 0 -> 1
-            if (t < 0.0f) t = 0.0f;
-            if (t > 1.0f) t = 1.0f;
-            const float k = (t < 0.5f) ? (t * 2.0f) : ((1.0f - t) * 2.0f);  // 0->1->0
-            const float dim = 1.0f - (1.0f - HIT_DIM) * k;
-            if (dim < a) a = dim;
+            const float flashSec = HitFlashSec(s);
+            const float dimMin   = HitDim(s);
+            if (flashSec <= 0.0f) {
+                s->hitFlash = 0.0f;                 // 配置成"不闪"
+            } else {
+                float t = 1.0f - s->hitFlash / flashSec;   // 0 -> 1
+                if (t < 0.0f) t = 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                const float k = (t < 0.5f) ? (t * 2.0f) : ((1.0f - t) * 2.0f);  // 0->1->0
+                const float dim = 1.0f - (1.0f - dimMin) * k;
+                if (dim < a) a = dim;
 
-            s->hitFlash -= dt;
-            if (s->hitFlash < 0.0f) s->hitFlash = 0.0f;
+                s->hitFlash -= dt;
+                if (s->hitFlash < 0.0f) s->hitFlash = 0.0f;
+            }
         }
 
         // (3) 临爆闪烁: 爆炸前 EXPLODE_WARN_SEC 秒开始, 每 EXPLODE_BLINK_PERIOD 秒一闪。
@@ -1892,8 +1915,8 @@ static void UpdatePhysics(float dt)
             if (b->x < 0) b->x = 0;
             if (b->x + b->w > g_screenW) b->x = (float)(g_screenW - b->w);
 
-            a->hitFlash = HIT_FLASH_SEC;
-            b->hitFlash = HIT_FLASH_SEC;
+            a->hitFlash = HitFlashSec(a);
+            b->hitFlash = HitFlashSec(b);
 
             // 特别快的互撞 -> 双方引信都缩短(方块没有引信, 不参与)
             if (impact >= FAST_HIT_SPEED) {

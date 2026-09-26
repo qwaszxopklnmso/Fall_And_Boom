@@ -222,6 +222,7 @@ images\
 |---|---|---|
 | 引信 / 自己爆炸 | ✗ 永远不炸 | ✓ `EXPLOSIVE_LIFE_SEC`（默认 5）秒后炸 |
 | 临爆闪烁 | ✗ 不闪 | ✓ 最后 `EXPLODE_WARN_SEC` 秒开始闪 |
+| 被撞闪光的时长 / 最浅 alpha | `BLOCK_HIT_FLASH_SEC` / `BLOCK_HIT_DIM` | `EXPLOSIVE_HIT_FLASH_SEC` / `EXPLOSIVE_HIT_DIM` |
 | 高速撞击扣引信 | ✗ | ✓ 相对速度 ≥ `FAST_HIT_SPEED` 时扣 `FAST_HIT_LIFE_LOSS` |
 | 被爆炸波及时 | **炸成碎片**（`BLOCK_DESTROY_IN_BLAST`） | 被炸飞，引信不变 |
 | 被炸掉之后 | 只是碎掉，**不再向外传播**（不连锁） | 到点才炸 |
@@ -317,7 +318,6 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `FOLLOW_SANITY_VX` | 20000 | 跟随窗口时的荒谬速度上限 |
 | `MAX_FALLING` / `MAX_TOTAL` | 20 / 220 | 同屏下落中（两类合计）/ 精灵总数上限 |
 | `DEBRIS_COLS` / `DEBRIS_ROWS` | 4 / 4 | 爆炸碎片行列数 |
-| `HIT_FLASH_SEC` / `HIT_DIM` | 0.40 / 0.50 | 被撞后闪光的时长 / 最浅 alpha |
 | `AUTO_SPAWN_ENABLED` | `true` | 自动随机下落生成（关掉就只剩手动） |
 | `MANUAL_SPAWN_ENABLED` | `true` | 用手动键生成（关掉就只剩自动，连钩子都不装） |
 | `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动键的去抖间隔（毫秒，两个键各自计时） |
@@ -335,6 +335,8 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `BLOCK_STAY_SEC` | 12.0 | 停稳后停留几秒淡出消失（0 = 一直留着） |
 | `BLOCK_FADE_SEC` | 1.5 | 消失前的淡出时长（秒，0 = 直接不见） |
 | `BLOCK_DESTROY_IN_BLAST` | `true` | 爆炸范围内的方块会被炸掉（不连锁） |
+| `BLOCK_HIT_FLASH_SEC` | 0.40 | 方块被撞后"闪一下"的时长（秒，0 = 不闪） |
+| `BLOCK_HIT_DIM` | 0.50 | 方块闪到最浅时的 alpha（1 = 看不出闪） |
 
 **爆炸物 `explosives`**
 
@@ -346,6 +348,8 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `EXPLOSIVE_SPAWN_WEIGHT` | 1.0 | 每张爆炸物图的生成权重（和方块权重比大小） |
 | `EXPLOSIVE_SPAWN_KEY` | `"."` | 按这个键生成一个爆炸物 |
 | `EXPLOSIVE_FALL_SPEED_MIN` / `_MAX` | 450 / 700 | 爆炸物下落速度范围（像素/秒） |
+| `EXPLOSIVE_HIT_FLASH_SEC` | 0.40 | 爆炸物被撞后"闪一下"的时长（秒，0 = 不闪） |
+| `EXPLOSIVE_HIT_DIM` | 0.50 | 爆炸物闪到最浅时的 alpha（1 = 看不出闪） |
 | `EXPLOSIVE_LIFE_SEC` | 5.0 | 引信：生成后几秒自己爆炸 |
 | `EXPLODE_WARN_SEC` | 3.0 | 爆炸前多少秒开始闪烁 |
 | `EXPLODE_BLINK_PERIOD` / `_MIN` | 0.6 / 0.45 | 闪烁周期（秒）/ 最浅 alpha |
@@ -375,6 +379,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `SPAWN_KEY` | `BLOCK_SPAWN_KEY` + `EXPLOSIVE_SPAWN_KEY`（一个键拆成两个） |
 | `BLOCK_CHAIN_EXPLOSION` | 已删除：方块不再连锁（写进去会被忽略） |
 | `BLOCK_BLAST_RADIUS` / `_POWER_MIN` / `_MAX` / `_GRAVITY` | 已删除：方块被炸掉时不放冲击波 |
+| `HIT_FLASH_SEC` / `HIT_DIM` | `BLOCK_HIT_FLASH_SEC` / `BLOCK_HIT_DIM` + `EXPLOSIVE_HIT_FLASH_SEC` / `EXPLOSIVE_HIT_DIM`（两类各一套） |
 
 </details>
 
