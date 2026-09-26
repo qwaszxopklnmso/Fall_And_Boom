@@ -35,15 +35,15 @@ using namespace Gdiplus;
 static const wchar_t* kOverlayClass = L"FallingImgOverlay";
 static const wchar_t* kMasterClass  = L"FallingImgMaster";
 
-static const int   MAX_IMAGES      = 6;
-static const int   MAX_FALLING     = 12;
+static const int   MAX_IMAGES      = 10;
+static const int   MAX_FALLING     = 20;
 static const int   MAX_TOTAL       = 220;
-static const int   DEBRIS_COLS     = 3;
-static const int   DEBRIS_ROWS     = 3;
-static const float FALL_SPEED_MIN  = 60.0f;
-static const float FALL_SPEED_MAX  = 480.0f;
-static const int   SPRITE_SIZE     = 32;
-static const float WINDOW_SCAN_SEC = 0.10f;   // 窗口扫描间隔
+static const int   DEBRIS_COLS     = 4;
+static const int   DEBRIS_ROWS     = 4;
+static const float FALL_SPEED_MIN  = 260.0f;
+static const float FALL_SPEED_MAX  = 600.0f;
+static const int   SPRITE_SIZE     = 48;
+static const float WINDOW_SCAN_SEC = 0.08f;   // 窗口扫描间隔
 static const float FOLLOW_MAX_VX   = 250.0f;  // 超过这个速度就不再"拖着走", 改为创飞
 static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
 
@@ -53,13 +53,20 @@ static const float EXPLOSION_POWER_MAX = 640.0f;  // 冲击波初速(爆心附�
 static const float EXPLOSION_GRAVITY   = 1300.0f; // 被炸飞之后的重力
 
 // ---- 碰撞反馈: 闪一下再恢复(不再按剩余寿命长时间发灰) ----
-static const float HIT_FLASH_SEC = 0.55f;   // "闪一下"的总时长(秒)
-static const float HIT_DIM       = 0.40f;   // 闪到最浅时的 alpha
+static const float HIT_FLASH_SEC = 0.40f;   // "闪一下"的总时长(秒)
+static const float HIT_DIM       = 0.50f;   // 闪到最浅时的 alpha
 
 // ---- 临爆闪烁 ----
 static const float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁, 改这里
 static const float EXPLODE_BLINK_PERIOD = 0.6f;   // ★ 闪烁周期(秒)
-static const float EXPLODE_BLINK_MIN    = 0.25f;  // 闪烁时最浅的 alpha
+static const float EXPLODE_BLINK_MIN    = 0.45f;  // 闪烁时最浅的 alpha
+
+// ---- 寿命 / 高速撞击伤害 ----
+static const float SPRITE_LIFE_SEC    = 5.0f;   // ★ 统一爆炸时间(秒, 所有图片一样)
+static const float FAST_HIT_SPEED     = 800.0f; // ★ 相对速度超过它算"特别快的撞击"(像素/秒)
+                                                //   定在 800 是因为自由落体上限是 600,
+                                                //   所以普通下落互撞永远不会触发, 只有被撞飞/炸飞后才够
+static const float FAST_HIT_LIFE_LOSS = 2.5f;   // ★ 高速撞击扣掉的寿命(秒)
 
 // ------------------------------------------------------------
 // 全局
@@ -707,6 +714,9 @@ static void UpdatePhysics(float dt)
                     s->gravity = 1500.0f;
                     s->restingOn = nullptr;
                     s->hitFlash  = HIT_FLASH_SEC;   // 闪一下, 不再长时间变浅
+                    // 被窗口以特别快的速度撞飞 -> 引信缩短
+                    if (fabsf(winVx) >= FAST_HIT_SPEED)
+                        s->life -= FAST_HIT_LIFE_LOSS;
                     break;
                 }
             }
@@ -880,6 +890,11 @@ static void UpdatePhysics(float dt)
             float overlapY = std::min(ay2, by2) - std::max(ay1, by1);
             if (overlapX <= 0.0f || overlapY <= 0.0f) continue;
 
+            // 碰撞前的相对速度。下面会改写速度, 所以必须在这里先算。
+            const float relVx = a->vx - b->vx;
+            const float relVy = a->vy - b->vy;
+            const float impact = std::sqrt(relVx * relVx + relVy * relVy);
+
             float acx = a->x + a->w * 0.5f;
             float bcx = b->x + b->w * 0.5f;
             float acy = a->y + a->h * 0.5f;
@@ -936,6 +951,12 @@ static void UpdatePhysics(float dt)
 
             a->hitFlash = HIT_FLASH_SEC;
             b->hitFlash = HIT_FLASH_SEC;
+
+            // 特别快的互撞 -> 双方引信都缩短
+            if (impact >= FAST_HIT_SPEED) {
+                a->life -= FAST_HIT_LIFE_LOSS;
+                b->life -= FAST_HIT_LIFE_LOSS;
+            }
         }
     }
 
@@ -1072,8 +1093,6 @@ static void LoadImages()
     std::sort(files.begin(), files.end());
     if ((int)files.size() > MAX_IMAGES) files.resize(MAX_IMAGES);
 
-    const float pool[3] = { 3.0f, 5.0f, 10.0f };
-
     for (auto& path : files) {
         auto asset = std::make_unique<ImageAsset>();
 
@@ -1101,7 +1120,7 @@ static void LoadImages()
         asset->frameCount = raw->GetFrameCount(&FrameDimensionTime);
         if (asset->frameCount == 0) asset->frameCount = 1;
         asset->frame = 0;
-        asset->life  = pool[g_assets.size() % 3];
+        asset->life  = SPRITE_LIFE_SEC;   // 所有图片统一 5 秒
 
         ReadFrameDelays(*asset);
         ComputeAssetLayout(*asset);
@@ -1269,8 +1288,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         std::wstring msg =
             L"没有找到可用图片！\n\n"
             L"请在 exe 同目录下建一个 images 文件夹，\n"
-            L"放入 1~6 张 png / jpg / bmp / gif / webp 图片。\n\n"
-            L"文件名按字母排序，第 1/4 张 = 3 秒，第 2/5 张 = 5 秒，第 3/6 张 = 10 秒后爆炸。";
+            L"放入 1~" + std::to_wstring(MAX_IMAGES) +
+            L" 张 png / jpg / bmp / gif / webp 图片。\n\n"
+            L"每张图片存活 " + std::to_wstring((int)SPRITE_LIFE_SEC) +
+            L" 秒后爆炸；\n被以特别快的速度撞击会提前 " +
+            std::to_wstring((int)FAST_HIT_LIFE_LOSS) + L" 秒爆炸。";
         if (!g_failedFiles.empty()) {
             msg += L"\n\n以下文件无法解码：\n";
             for (size_t i = 0; i < g_failedFiles.size() && i < 8; ++i)
