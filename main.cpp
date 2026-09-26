@@ -52,6 +52,15 @@ static const float EXPLOSION_POWER_MIN = 260.0f;  // 冲击波初速(范围边�
 static const float EXPLOSION_POWER_MAX = 640.0f;  // 冲击波初速(爆心附近)
 static const float EXPLOSION_GRAVITY   = 1300.0f; // 被炸飞之后的重力
 
+// ---- 碰撞反馈: 闪一下再恢复(不再按剩余寿命长时间发灰) ----
+static const float HIT_FLASH_SEC = 0.55f;   // "闪一下"的总时长(秒)
+static const float HIT_DIM       = 0.40f;   // 闪到最浅时的 alpha
+
+// ---- 临爆闪烁 ----
+static const float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁, 改这里
+static const float EXPLODE_BLINK_PERIOD = 0.6f;   // ★ 闪烁周期(秒)
+static const float EXPLODE_BLINK_MIN    = 0.25f;  // 闪烁时最浅的 alpha
+
 // ------------------------------------------------------------
 // 全局
 // ------------------------------------------------------------
@@ -240,7 +249,11 @@ struct Sprite
 
     float life = 0.0f, maxLife = 1.0f;
     float alpha = 1.0f;
+    // 只在"爆炸碎屑"上用: 碎屑按剩余寿命淡出。
+    // 碰撞不再设置它了(那是老的长达数秒的发灰效果), 碰撞改为 hitFlash。
     float fadeStartLife = 0.0f;
+    // "被撞到了"的短暂闪光倒计时(秒)。>0 表示正在闪, 走三角形包络再恢复。
+    float hitFlash = 0.0f;
 
     bool isFalling = false;
     bool isDebris  = false;
@@ -487,6 +500,7 @@ static void SpawnFalling()
     s->maxLife = s->life = a.life;
     s->alpha = 1.0f;
     s->fadeStartLife = 0.0f;
+    s->hitFlash = 0.0f;
 
     g_sprites.push_back(std::move(s));
 }
@@ -536,7 +550,8 @@ static void SpawnDebris(Sprite* s, std::vector<std::unique_ptr<Sprite>>& out)
             d->maxLife = RandF(0.85f, 1.45f);
             d->life    = d->maxLife;
             d->alpha   = 1.0f;
-            d->fadeStartLife = d->maxLife;
+            d->fadeStartLife = d->maxLife;   // 碎屑淡出(碰撞不走这条路)
+            d->hitFlash = 0.0f;
 
             out.push_back(std::move(d));
         }
@@ -545,8 +560,8 @@ static void SpawnDebris(Sprite* s, std::vector<std::unique_ptr<Sprite>>& out)
 
 // ------------------------------------------------------------
 // 爆炸冲击波: 把半径内的其它精灵一起炸飞
-// 注意: 这里刻意不碰 fadeStartLife —— 被炸飞不应该让图片变浅。
-//       (窗口"创飞"是会变浅的, 冲击波不会, 两者行为不同)
+// 注意: 这里刻意不碰 alpha 相关字段(fadeStartLife / hitFlash) ——
+//       被爆炸冲击波掀飞不应该让图片变浅, 这一点和窗口"创飞"不同。
 // ------------------------------------------------------------
 static void ApplyExplosionShockwave(float cx, float cy)
 {
@@ -674,8 +689,7 @@ static void UpdatePhysics(float dt)
                     s->vy = -320.0f;
                     s->gravity = 1500.0f;
                     s->restingOn = nullptr;
-                    if (s->fadeStartLife <= 0.0f)
-                        s->fadeStartLife = s->life;
+                    s->hitFlash  = HIT_FLASH_SEC;   // 闪一下, 不再长时间变浅
                     break;
                 }
             }
@@ -799,14 +813,40 @@ static void UpdatePhysics(float dt)
             }
         }
 
-        // 透明度更新
+        // ---- 透明度 ----
+        float a = 1.0f;
+
+        // (1) 爆炸碎屑自身的淡出。碰撞已经不走这条路了。
         if (s->fadeStartLife > 0.0f) {
-            float na = s->life / s->fadeStartLife;
-            if (na < 0.0f) na = 0.0f;
-            if (fabsf(na - s->alpha) > 0.01f) {
-                s->alpha = na;
-            }
+            float d = s->life / s->fadeStartLife;
+            if (d < 0.0f) d = 0.0f;
+            if (d < a) a = d;
         }
+
+        // (2) 被撞/被弹 -> 快速闪一下再恢复。
+        //     三角形包络: 前半段压到 HIT_DIM, 后半段回到全不透明,
+        //     不再按剩余寿命慢慢发灰。
+        if (s->hitFlash > 0.0f) {
+            float t = 1.0f - s->hitFlash / HIT_FLASH_SEC;   // 0 -> 1
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            const float k = (t < 0.5f) ? (t * 2.0f) : ((1.0f - t) * 2.0f);  // 0->1->0
+            const float dim = 1.0f - (1.0f - HIT_DIM) * k;
+            if (dim < a) a = dim;
+
+            s->hitFlash -= dt;
+            if (s->hitFlash < 0.0f) s->hitFlash = 0.0f;
+        }
+
+        // (3) 临爆闪烁: 爆炸前 EXPLODE_WARN_SEC 秒开始, 每 EXPLODE_BLINK_PERIOD 秒一闪。
+        //     只对"会爆炸"的精灵生效(下落中的图片), 碎屑只是消失、不爆炸。
+        if (s->isFalling && !s->isDebris &&
+            s->life > 0.0f && s->life <= EXPLODE_WARN_SEC) {
+            const float phase = fmodf(s->life, EXPLODE_BLINK_PERIOD) / EXPLODE_BLINK_PERIOD;
+            if (phase < 0.5f && EXPLODE_BLINK_MIN < a) a = EXPLODE_BLINK_MIN;
+        }
+
+        s->alpha = a;
     }
 
     // ---- 精灵之间碰撞（下落 + 抛物线都参与） ----
@@ -877,8 +917,8 @@ static void UpdatePhysics(float dt)
             if (b->x < 0) b->x = 0;
             if (b->x + b->w > g_screenW) b->x = (float)(g_screenW - b->w);
 
-            if (a->fadeStartLife <= 0.0f) a->fadeStartLife = a->life;
-            if (b->fadeStartLife <= 0.0f) b->fadeStartLife = b->life;
+            a->hitFlash = HIT_FLASH_SEC;
+            b->hitFlash = HIT_FLASH_SEC;
         }
     }
 
