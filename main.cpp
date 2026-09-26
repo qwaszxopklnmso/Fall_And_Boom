@@ -52,7 +52,7 @@ static const float FALL_SPEED_MIN  = 405.0f;
 static const float FALL_SPEED_MAX  = 600.0f;
 static const int   SPRITE_SIZE     = 48;
 static const float WINDOW_SCAN_SEC = 0.08f;   // 窗口扫描间隔
-static const float FOLLOW_MAX_VX   = 250.0f;  // 超过这个速度就不再"拖着走", 改为创飞
+static const float FOLLOW_SANITY_VX = 20000.0f; // 跟随窗口时的荒谬值上限(挡矩形抖动)
 static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
 
 // ---- 生成方式开关 ----
@@ -994,9 +994,13 @@ static void UpdatePhysics(float dt)
                 if (s->restingOn) {
                     const WindowInfo* host = nullptr;
                     for (auto& wv : g_windowList) {
-                        // 窗口被往上拖到"顶边上面已经放不下它"时就不算平台了,
-                        // 图片会被放掉、重新下落(而不是被硬塞到 y<0 卡在屏幕顶)
-                        if (wv.hwnd == s->restingOn && TopEdgeFits(wv, s->h)) { host = &wv; break; }
+                        // 只要这个窗口还在列表里就继续跟着它 —— 这里**不**再要求
+                        // TopEdgeFits。窗口被往上拖到顶边上面放不下时, 图片会压在
+                        // y=0 继续跟着走; 放掉它才是错的: 用户看到的是"图片莫名其妙
+                        // 从窗口顶边上掉下去"。
+                        // (新图片能不能"落"在这种窗口上是另一回事, 那条走
+                        //  FindLandingTop/CrossesTopEdge, 仍然是严格的 TopEdgeFits。)
+                        if (wv.hwnd == s->restingOn) { host = &wv; break; }
                     }
                     // 有"别的"窗口这一拍从下面顶上来 -> 直接改站到它上面。
                     // 只"放掉"是不行的: 原来那块平台的顶边还在原处, 下一帧又会把
@@ -1021,14 +1025,34 @@ static void UpdatePhysics(float dt)
                         if (overlapX &&
                             TopEdgeVisibleAt(*host, s->x + s->w * 0.5f))
                         {
-                            // TopEdgeFits 保证了 ny >= 0, 不用再钳
+                            // 垂直: 顶边是参照点, 先精确对齐再按窗速平滑外推。
+                            // 只写 s->y = ny 的话, 图片每 0.08s 才动一下(窗口矩形
+                            // 是采样来的), 看起来就是一顿一顿地"跟不上"。
                             s->y = ny;
                             if (host->hasPrev) {
                                 const float winVx =
                                     (float)(host->rect.left - host->prevRect.left) / g_scanDt;
-                                if (fabsf(winVx) >= 1.0f && fabsf(winVx) < FOLLOW_MAX_VX)
-                                    s->x += winVx * dt;      // 水平跟随
+                                const float winVy =
+                                    (float)(host->rect.top  - host->prevRect.top ) / g_scanDt;
+
+                                // 水平: 顶边上没有参照点, 只能按窗速积分。
+                                //
+                                // 这里**故意不设"游戏性"速度上限**。原来卡在
+                                // FOLLOW_MAX_VX(250 px/s), 而拖动窗口轻松就超过它,
+                                // 结果窗口直接从图片脚下被抽走 ——
+                                // "图片跟不上 / 滑出去 / 掉下去"。
+                                // 图片本来就压在窗口顶边上, 窗口一动它当然要跟着走;
+                                // 创飞(横向扫进来撞飞)是另一条路径, 不受影响。
+                                // 只留一个荒谬值上限挡窗口矩形抖动。
+                                if (fabsf(winVx) < FOLLOW_SANITY_VX)
+                                    s->x += winVx * dt;
+                                // 同样按"距上次扫描过了多久"外推垂直位置
+                                if (fabsf(winVy) < FOLLOW_SANITY_VX)
+                                    s->y += winVy * g_scanAccum;
                             }
+                            if (s->y < 0.0f) s->y = 0.0f;   // 顶边已到屏幕上沿, 压在 y=0
+                            if (s->x < 0) s->x = 0;
+                            if (s->x + s->w > g_screenW) s->x = (float)(g_screenW - s->w);
                             s->vy = 0.0f;
                             resting = true;
                         }
