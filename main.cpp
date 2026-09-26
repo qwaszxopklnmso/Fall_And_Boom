@@ -89,7 +89,8 @@ static DWORD SPAWN_KEY_DEBOUNCE_MS = 250;
 // 但被炸掉的方块自己**不会再炸**: 就这么一层, 不连锁。
 // 停稳之后 BLOCK_STAY_SEC 秒消失(淡出, 不是爆炸), 免得屏幕越堆越满。
 static bool  BLOCKS_ENABLED         = true;   // ★ 关掉就完全不生成方块
-static int   BLOCK_MAX_IMAGES       = 8;      // ★ blocks 文件夹最多读几张
+static int   BLOCK_MAX_IMAGES       = 8;      // ★ blocks 文件夹最多读几张(是图片文件数, 不是同屏数量)
+static int   BLOCK_MAX_ONSCREEN     = 0;      // ★ 同屏方块数量上限(0 = 不限, 只受 MAX_FALLING 管)
 static int   BLOCK_SIZE             = 48;     // 方块显示边长(像素)
 static float BLOCK_SPAWN_WEIGHT     = 1.0f;   // ★ 生成权重, 和爆炸物按比例随机
 static float BLOCK_FALL_SPEED_MIN   = 450.0f; // 方块下落速度下限(像素/秒)
@@ -103,7 +104,8 @@ static float BLOCK_HIT_DIM          = 0.50f;  // 方块闪到最浅时的 alpha
 
 // ---- 爆炸物 explosives (images\explosives) ----
 static bool  EXPLOSIVES_ENABLED       = true; // ★ 关掉就只剩方块
-static int   EXPLOSIVE_MAX_IMAGES     = 15;   // ★ explosives 文件夹最多读几张
+static int   EXPLOSIVE_MAX_IMAGES     = 15;   // ★ explosives 文件夹最多读几张(是图片文件数, 不是同屏数量)
+static int   EXPLOSIVE_MAX_ONSCREEN   = 0;    // ★ 同屏爆炸物数量上限(0 = 不限, 只受 MAX_FALLING 管)
 static int   EXPLOSIVE_SIZE           = 48;   // 爆炸物显示边长(像素)
 static float EXPLOSIVE_SPAWN_WEIGHT   = 1.0f; // ★ 生成权重, 和方块按比例随机
 static float EXPLOSIVE_FALL_SPEED_MIN = 450.0f; // 爆炸物下落速度下限(像素/秒)
@@ -198,7 +200,7 @@ static const CfgEntry kCfgTable[] = {
     { L"WINDOW_SCAN_SEC",       CFG_FLOAT, &WINDOW_SCAN_SEC,       L"窗口位置扫描间隔, 秒(越小越跟手, 也越费 CPU)", 0 },
     { L"SWEEP_MIN_VX",          CFG_FLOAT, &SWEEP_MIN_VX,          L"窗口横向速度超过它就把图片\"创飞\", 像素/秒", 0 },
     { L"FOLLOW_SANITY_VX",      CFG_FLOAT, &FOLLOW_SANITY_VX,      L"跟随窗口时的荒谬速度上限, 挡窗口矩形抖动用", 0 },
-    { L"MAX_FALLING",           CFG_INT,   &MAX_FALLING,           L"同屏\"正在下落\"的数量上限(方块 + 爆炸物)", 0 },
+    { L"MAX_FALLING",           CFG_INT,   &MAX_FALLING,           L"同屏\"正在下落\"的数量上限(方块 + 爆炸物 加起来)", 0 },
     { L"MAX_TOTAL",             CFG_INT,   &MAX_TOTAL,             L"精灵总数上限(含爆炸碎片)", 0 },
     { L"DEBRIS_COLS",           CFG_INT,   &DEBRIS_COLS,           L"爆炸碎片列数", 0 },
     { L"DEBRIS_ROWS",           CFG_INT,   &DEBRIS_ROWS,           L"爆炸碎片行数", 0 },
@@ -208,7 +210,8 @@ static const CfgEntry kCfgTable[] = {
 
     // ---------------- 方块 blocks ----------------
     { L"BLOCKS_ENABLED",         CFG_BOOL,  &BLOCKS_ENABLED,         L"false = 完全不生成方块(blocks 文件夹也不会读)", 1 },
-    { L"BLOCK_MAX_IMAGES",       CFG_INT,   &BLOCK_MAX_IMAGES,       L"blocks 文件夹最多读几张(按文件名排序)", 1 },
+    { L"BLOCK_MAX_IMAGES",       CFG_INT,   &BLOCK_MAX_IMAGES,       L"blocks 文件夹最多读几张图(按文件名排序, 不是同屏数量)", 1 },
+    { L"BLOCK_MAX_ONSCREEN",     CFG_INT,   &BLOCK_MAX_ONSCREEN,     L"同屏方块数量上限(0 = 不限, 只受 MAX_FALLING 管)", 1 },
     { L"BLOCK_SIZE",             CFG_INT,   &BLOCK_SIZE,             L"方块显示边长, 像素(会自动缩放)", 1 },
     { L"BLOCK_SPAWN_WEIGHT",     CFG_FLOAT, &BLOCK_SPAWN_WEIGHT,     L"每张方块图的生成权重, 0 = 不出方块", 1 },
     { L"BLOCK_SPAWN_KEY",        CFG_KEY,   &BLOCK_SPAWN_KEY_VK,     L"按这个键在鼠标位置生成一个方块(一个字符或虚拟键码数字)", 1 },
@@ -222,7 +225,8 @@ static const CfgEntry kCfgTable[] = {
 
     // ---------------- 爆炸物 explosives ----------------
     { L"EXPLOSIVES_ENABLED",       CFG_BOOL,  &EXPLOSIVES_ENABLED,       L"false = 完全不生成爆炸物(explosives 文件夹也不会读)", 2 },
-    { L"EXPLOSIVE_MAX_IMAGES",     CFG_INT,   &EXPLOSIVE_MAX_IMAGES,     L"explosives 文件夹最多读几张(按文件名排序)", 2 },
+    { L"EXPLOSIVE_MAX_IMAGES",     CFG_INT,   &EXPLOSIVE_MAX_IMAGES,     L"explosives 文件夹最多读几张图(按文件名排序, 不是同屏数量)", 2 },
+    { L"EXPLOSIVE_MAX_ONSCREEN",   CFG_INT,   &EXPLOSIVE_MAX_ONSCREEN,   L"同屏爆炸物数量上限(0 = 不限, 只受 MAX_FALLING 管)", 2 },
     { L"EXPLOSIVE_SIZE",           CFG_INT,   &EXPLOSIVE_SIZE,           L"爆炸物显示边长, 像素(会自动缩放)", 2 },
     { L"EXPLOSIVE_SPAWN_WEIGHT",   CFG_FLOAT, &EXPLOSIVE_SPAWN_WEIGHT,   L"每张爆炸物图的生成权重, 0 = 不出爆炸物(和方块权重比大小)", 2 },
     { L"EXPLOSIVE_SPAWN_KEY",      CFG_KEY,   &EXPLOSIVE_SPAWN_KEY_VK,   L"按这个键在鼠标位置生成一个爆炸物(一个字符或虚拟键码数字)", 2 },
@@ -507,6 +511,7 @@ static void SanitizeConfig()
 
     // ---- 方块 ----
     clampI(BLOCK_MAX_IMAGES, 1, 512);
+    clampI(BLOCK_MAX_ONSCREEN, 0, 2000);
     clampI(BLOCK_SIZE,       8, 512);
     clampF(BLOCK_SPAWN_WEIGHT, 0.0f, 1000000.0f);
     clampF(BLOCK_FALL_SPEED_MIN, 0.0f, 20000.0f);
@@ -520,6 +525,7 @@ static void SanitizeConfig()
 
     // ---- 爆炸物 ----
     clampI(EXPLOSIVE_MAX_IMAGES, 1, 512);
+    clampI(EXPLOSIVE_MAX_ONSCREEN, 0, 2000);
     clampI(EXPLOSIVE_SIZE,       8, 512);
     clampF(EXPLOSIVE_SPAWN_WEIGHT, 0.0f, 1000000.0f);
     clampF(EXPLOSIVE_FALL_SPEED_MIN, 0.0f, 20000.0f);
@@ -1289,13 +1295,35 @@ static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f,
     if (g_assets.empty()) return;
     if ((int)g_sprites.size() >= MAX_TOTAL) return;
 
-    int falling = 0;
-    for (auto& sp : g_sprites)
-        if (sp->isFalling && !sp->dead) ++falling;
+    int falling = 0, blockOnScreen = 0, explOnScreen = 0;
+    for (auto& sp : g_sprites) {
+        if (!sp->isFalling || sp->dead) continue;
+        ++falling;
+        if (sp->isBlock) ++blockOnScreen; else ++explOnScreen;
+    }
     if (falling >= MAX_FALLING) return;
 
+    // 分类上限: 0 = 不限。两个都设了就各自独立封顶, 互不挤占。
+    auto AtCap = [&](bool isBlock) {
+        const int lim = isBlock ? BLOCK_MAX_ONSCREEN : EXPLOSIVE_MAX_ONSCREEN;
+        if (lim <= 0) return false;
+        return (isBlock ? blockOnScreen : explOnScreen) >= lim;
+    };
+
     const ImageAsset* pa = PickAsset(kind);
-    if (!pa) return;
+    // 自动生成随机挑到了一类已封顶的图, 就改成另一类
+    // (手动指定的键不换, 只在下面挡掉)
+    if (pa && kind == SPAWN_RANDOM && AtCap(pa->isBlock)) {
+        const bool otherIsBlock = !pa->isBlock;
+        // 另一类被权重 0 关掉了就不换, 否则等于绕过了"0 = 不出这一类"
+        const float otherWeight = otherIsBlock ? BLOCK_SPAWN_WEIGHT : EXPLOSIVE_SPAWN_WEIGHT;
+        if (otherWeight > 0.0f) {
+            const ImageAsset* alt =
+                PickAsset(otherIsBlock ? SPAWN_BLOCK : SPAWN_EXPLOSIVE);
+            if (alt && !AtCap(alt->isBlock)) pa = alt;
+        }
+    }
+    if (!pa || AtCap(pa->isBlock)) return;
     const ImageAsset& a = *pa;
 
     const int sz = a.size;

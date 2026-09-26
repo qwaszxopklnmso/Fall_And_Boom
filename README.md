@@ -287,6 +287,24 @@ images\
 
 `BLOCK_STAY_SEC = 0` 表示一直留着（那就要自己盯着 `MAX_FALLING` / `MAX_TOTAL`）。
 
+### 同屏数量到底被谁卡住
+
+有三个数字会拦住"再生成一张"，别搞混：
+
+| 键 | 管的是 |
+|---|---|
+| `MAX_FALLING` | 方块 + 爆炸物**合计**的在场上限（默认 20），**两类共用** |
+| `BLOCK_MAX_ONSCREEN` / `EXPLOSIVE_MAX_ONSCREEN` | **每一类各自**的在场上限（默认 0 = 不限） |
+| `BLOCK_MAX_IMAGES` / `EXPLOSIVE_MAX_IMAGES` | 从文件夹里**读几张图**（是图片文件数量，不是同屏数量） |
+| `MAX_TOTAL` | 精灵总数上限（默认 220），含爆炸后的小碎片 |
+
+想"方块最多 5 个、爆炸物随便来"，就 `BLOCK_MAX_ONSCREEN = 5`、
+`EXPLOSIVE_MAX_ONSCREEN = 0`、再把 `MAX_FALLING` 调大到够用。
+
+分类上限到了的时候：手动按那个键**不会**生成（防止刷屏）；
+自动随机生成则会**改用另一类**还没满的图，所以不会因为一类满了就整个停住。
+两类都满了，或者 `MAX_FALLING` / `MAX_TOTAL` 到了，才会真的停下来。
+
 ### 爆炸是怎么传播的
 
 **只传播一层，不连锁。**
@@ -365,7 +383,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `WINDOW_SCAN_SEC` | 0.09 | 窗口位置采样间隔（秒） |
 | `SWEEP_MIN_VX` | 260 | 窗口横向速度超过它就把图片"创飞"（像素/秒） |
 | `FOLLOW_SANITY_VX` | 20000 | 跟随窗口时的荒谬速度上限 |
-| `MAX_FALLING` / `MAX_TOTAL` | 20 / 220 | 同屏下落中（两类合计）/ 精灵总数上限 |
+| `MAX_FALLING` / `MAX_TOTAL` | 20 / 220 | 同屏下落中（**两类合计**）/ 精灵总数上限 |
 | `DEBRIS_COLS` / `DEBRIS_ROWS` | 4 / 4 | 爆炸碎片行列数 |
 | `AUTO_SPAWN_ENABLED` | `true` | 自动随机下落生成（关掉就只剩手动） |
 | `MANUAL_SPAWN_ENABLED` | `true` | 用手动键生成（关掉就只剩自动，连钩子都不装） |
@@ -376,7 +394,8 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `BLOCKS_ENABLED` | `true` | 关掉就完全不生成方块（`blocks` 文件夹也不读） |
-| `BLOCK_MAX_IMAGES` | 8 | `blocks` 最多读几张（按文件名排序） |
+| `BLOCK_MAX_IMAGES` | 8 | `blocks` 最多读几张**图**（按文件名排序，不是同屏数量） |
+| `BLOCK_MAX_ONSCREEN` | 0 | 同屏方块数量上限（0 = 不限，只受 `MAX_FALLING` 管） |
 | `BLOCK_SIZE` | 48 | 方块缩放到的边长（像素）；也是它能不能站上窗口顶边的高度门槛 |
 | `BLOCK_SPAWN_WEIGHT` | 1.0 | 每张方块图的生成权重，0 = 不出方块 |
 | `BLOCK_SPAWN_KEY` | `","` | 按这个键生成一个方块 |
@@ -392,7 +411,8 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `EXPLOSIVES_ENABLED` | `true` | 关掉就只剩方块 |
-| `EXPLOSIVE_MAX_IMAGES` | 15 | `explosives` 最多读几张（按文件名排序） |
+| `EXPLOSIVE_MAX_IMAGES` | 15 | `explosives` 最多读几张**图**（按文件名排序，不是同屏数量） |
+| `EXPLOSIVE_MAX_ONSCREEN` | 0 | 同屏爆炸物数量上限（0 = 不限，只受 `MAX_FALLING` 管） |
 | `EXPLOSIVE_SIZE` | 48 | 爆炸物缩放到的边长（像素） |
 | `EXPLOSIVE_SPAWN_WEIGHT` | 1.0 | 每张爆炸物图的生成权重（和方块权重比大小） |
 | `EXPLOSIVE_SPAWN_KEY` | `"."` | 按这个键生成一个爆炸物 |
