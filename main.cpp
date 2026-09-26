@@ -44,17 +44,17 @@ static const int   MAX_FALLING     = 20;
 static const int   MAX_TOTAL       = 220;
 static const int   DEBRIS_COLS     = 4;
 static const int   DEBRIS_ROWS     = 4;
-static const float FALL_SPEED_MIN  = 260.0f;
+static const float FALL_SPEED_MIN  = 405.0f;
 static const float FALL_SPEED_MAX  = 600.0f;
 static const int   SPRITE_SIZE     = 48;
 static const float WINDOW_SCAN_SEC = 0.08f;   // 窗口扫描间隔
 static const float FOLLOW_MAX_VX   = 250.0f;  // 超过这个速度就不再"拖着走", 改为创飞
 static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
 
-static const float EXPLOSION_RADIUS    = 150.0f;  // 爆炸冲击波半径(像素)
-static const float EXPLOSION_POWER_MIN = 260.0f;  // 冲击波初速(范围边缘)
-static const float EXPLOSION_POWER_MAX = 640.0f;  // 冲击波初速(爆心附近)
-static const float EXPLOSION_GRAVITY   = 1300.0f; // 被炸飞之后的重力
+static const float EXPLOSION_RADIUS    = 320.0f;  // 爆炸冲击波半径(像素)
+static const float EXPLOSION_POWER_MIN = 500.0f;  // 冲击波初速(范围边缘)
+static const float EXPLOSION_POWER_MAX = 900.0f;  // 冲击波初速(爆心附近)
+static const float EXPLOSION_GRAVITY   = 1400.0f; // 被炸飞之后的重力
 
 // ---- 碰撞反馈: 闪一下再恢复(不再按剩余寿命长时间发灰) ----
 static const float HIT_FLASH_SEC = 0.40f;   // "闪一下"的总时长(秒)
@@ -67,7 +67,7 @@ static const float EXPLODE_BLINK_MIN    = 0.45f;  // 闪烁时最浅的 alpha
 
 // ---- 寿命 / 高速撞击伤害 ----
 static const float SPRITE_LIFE_SEC    = 5.0f;   // ★ 统一爆炸时间(秒, 所有图片一样)
-static const float FAST_HIT_SPEED     = 800.0f; // ★ 相对速度超过它算"特别快的撞击"(像素/秒)
+static const float FAST_HIT_SPEED     = 1650.0f; // ★ 相对速度超过它算"特别快的撞击"(像素/秒)
                                                 //   定在 800 是因为自由落体上限是 600,
                                                 //   所以普通下落互撞永远不会触发, 只有被撞飞/炸飞后才够
 static const float FAST_HIT_LIFE_LOSS = 2.5f;   // ★ 高速撞击扣掉的寿命(秒)
@@ -139,14 +139,16 @@ struct WindowInfo {
 };
 
 static std::vector<WindowInfo> g_windowList;
+// 本次扫描里由 GetForegroundWindow 补进来的 z-band 窗口(EnumWindows 看不到的),
+// 仅用于去重: 万一将来某个系统版本又开始把它枚举出来, 不至于变成两条记录。
+static HWND g_bandHwnd = nullptr;
 
-// EnumWindows 按 Z 序从顶层到底层枚举
-static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
+// 把一个窗口按统一规则判定, 通过则追加到 list 末尾。
+// 遮挡判定假设 "list 里已有的都是 Z 序更高的窗口", 所以调用顺序必须自上而下。
+static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
 {
-    auto* list = reinterpret_cast<std::vector<WindowInfo>*>(lParam);
-
-    if (!IsWindowVisible(hwnd)) return TRUE;
-    if (IsIconic(hwnd))         return TRUE;
+    if (!IsWindowVisible(hwnd)) return false;
+    if (IsIconic(hwnd))         return false;
 
     // ---- DWM 隐身(cloaked)窗口必须当成不可见 ----
     // 对这类窗口 IsWindowVisible 仍然返回 TRUE, 但它根本没被渲染。
@@ -157,7 +159,7 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     DWORD cloaked = 0;
     if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) &&
         cloaked != 0)
-        return TRUE;
+        return false;
 
     // 注意: 这里以前有一句 `if (extStyle & WS_EX_TOOLWINDOW) return TRUE;`,
     // 会把整个窗口丢掉。但 shell 的浮层几乎全是 WS_EX_TOOLWINDOW ——
@@ -167,20 +169,20 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
 
     wchar_t cls[256] = {};
     GetClassNameW(hwnd, cls, 256);
-    if (wcscmp(cls, kOverlayClass) == 0) return TRUE;
-    if (wcscmp(cls, kMasterClass)  == 0) return TRUE;
-    if (wcscmp(cls, L"Progman")    == 0) return TRUE;
-    if (wcscmp(cls, L"WorkerW")    == 0) return TRUE;
-    if (wcscmp(cls, L"Shell_TrayWnd") == 0) return TRUE;
+    if (wcscmp(cls, kOverlayClass) == 0) return false;
+    if (wcscmp(cls, kMasterClass)  == 0) return false;
+    if (wcscmp(cls, L"Progman")    == 0) return false;
+    if (wcscmp(cls, L"WorkerW")    == 0) return false;
+    if (wcscmp(cls, L"Shell_TrayWnd") == 0) return false;
 
     RECT r;
-    if (!GetWindowRect(hwnd, &r)) return TRUE;
-    if (r.right <= r.left || r.bottom <= r.top) return TRUE;
+    if (!GetWindowRect(hwnd, &r)) return false;
+    if (r.right <= r.left || r.bottom <= r.top) return false;
     // 只有"完全落在工作区上下方之外"的窗口才能直接丢掉。
     // 注意不能写成 r.top < 0: 最大化窗口的 GetWindowRect 会把不可见的
     // DWM 调整边框算进去(Top 常为 -7), 那样会把正在铺满屏幕的窗口丢掉,
     // 导致它背后被完全遮盖的窗口重新获得物理碰撞。
-    if (r.top >= g_screenH || r.bottom <= 0) return TRUE;
+    if (r.top >= g_screenH || r.bottom <= 0) return false;
 
     // ---- 全屏 / 无边框窗口化全屏 判定 ----
     // 这类窗口铺满整个显示器。它仍然要参与下面的"遮挡过滤"，
@@ -207,7 +209,7 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
         if (!IntersectRect(&inter, &wi.rect, &r)) continue;
         if (inter.left   <= r.left  && inter.right  >= r.right &&
             inter.top    <= r.top   && inter.bottom >= r.bottom) {
-            return TRUE;                       // 完全被覆盖, 直接跳过
+            return false;                      // 完全被覆盖, 直接跳过
         }
         occ.push_back(inter);
     }
@@ -221,9 +223,28 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     // 否则图片会被摆到 y = r.top - SPRITE_SIZE < 0, 直接停到屏幕外面去。
     // 屏幕顶端那些触控条(EdgeUiInputTopWndClass, 0..3px)、1x1 的辅助窗口
     // 都靠这一条挡掉; 任务视图顶边也在 y=0, 同样不会被当成平台。
+    // 位置不合适的窗口只是当不成"平台", 它的左/右/下边仍然会当墙撞(见 CollideWithWindows)。
     wi.platform  = (!fullscreen && r.top >= SPRITE_SIZE);
     wi.occluders = std::move(occ);
     list->push_back(std::move(wi));
+    return true;
+}
+
+// EnumWindows 按 Z 序从顶层到底层枚举
+static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
+{
+    if (hwnd == g_bandHwnd) return TRUE;      // 已经在 ScanWindows 里补过了
+    AcceptWindow(hwnd, reinterpret_cast<std::vector<WindowInfo>*>(lParam));
+    return TRUE;
+}
+
+// EnumWindows 只能看见默认 z-band 上的窗口。
+// 检查 target 是否能被 EnumWindows 枚举到(命中即提前结束)。
+struct ExistsCtx { HWND target; bool found; };
+static BOOL CALLBACK ExistsProc(HWND hwnd, LPARAM lParam)
+{
+    auto* c = reinterpret_cast<ExistsCtx*>(lParam);
+    if (hwnd == c->target) { c->found = true; return FALSE; }
     return TRUE;
 }
 
@@ -247,6 +268,27 @@ static void ScanWindows()
     std::vector<WindowInfo> oldList;
     oldList.swap(g_windowList);
     g_windowList.clear();
+
+    // ---- 先补上 EnumWindows 看不见的 "z-band 窗口" ----
+    // Win11 的开始菜单 / 搜索 / 通知中心 等 shell 浮层是用 CreateWindowInBand
+    // 建在比默认 z-band 更高的 band 上的。它们是货真价实的顶层窗口
+    // (WS_POPUP|WS_VISIBLE, 父窗口是桌面, 没被 DWM cloaked, 矩形也正常),
+    // 但 EnumWindows / EnumChildWindows / FindWindow / GetWindow 链
+    // **一个都枚举不到它们**, 只有 GetForegroundWindow 能拿到。
+    // 因为它们在所有窗口之上, 必须先入列 —— 这样后面的窗口才会把被它们
+    // 压住的那部分顶边算成"看不见", 不会出现悬空的停靠点。
+    HWND fg = GetForegroundWindow();
+    g_bandHwnd = nullptr;
+    if (fg) {
+        ExistsCtx ec = { fg, false };
+        EnumWindows(ExistsProc, reinterpret_cast<LPARAM>(&ec));
+        if (!ec.found) {
+            // 枚举不到的可见窗口 => band 窗口。此时 g_windowList 为空,
+            // AcceptWindow 内部的遮挡收集自然是空的(它就是最上层)。
+            AcceptWindow(fg, &g_windowList);
+            g_bandHwnd = fg;
+        }
+    }
 
     EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&g_windowList));
 
@@ -632,7 +674,6 @@ static void ApplyExplosionShockwave(float cx, float cy)
 static void CollideWithWindows(Sprite* s)
 {
     for (auto& wv : g_windowList) {
-        if (!wv.platform) continue;           // 全屏 / 顶边在屏幕外 -> 不当作平台
         const RECT& wr = wv.rect;
         if (s->x + s->w <= wr.left || s->x >= wr.right) continue;
         if (s->y + s->h <= wr.top  || s->y >= wr.bottom) continue;
@@ -643,11 +684,25 @@ static void CollideWithWindows(Sprite* s)
         float pLeft   = (s->x + s->w) - wr.left;
         float pRight  = wr.right - s->x;
 
-        float minP = pTop;
-        int axis = 0; // 0=上方 1=下方 2=左侧 3=右侧
-        if (pBottom < minP) { minP = pBottom; axis = 1; }
-        if (pLeft   < minP) { minP = pLeft;   axis = 2; }
-        if (pRight  < minP) { minP = pRight;  axis = 3; }
+        // ---- 只考虑"真的在屏幕里"的边 ----
+        // 顶边: 必须能站人(wv.platform)。顶边在屏幕外的窗口(最大化 top=-7、
+        //       通知中心 top=0)如果按顶边解算, 图片会被摆到 y<0 直接看不见。
+        // 其余边: 必须在工作区内。否则会把图片推到工作区外面去, 下一帧再被
+        //       屏幕边界钳回来、又和窗口重叠, 于是贴着屏幕边抖个不停。
+        //       例: 通知中心 (2200,0)-(2560,1392) 的右边和底边都贴着工作区边界,
+        //       只有左边的竖边是"实墙"。
+        const bool okTop    = wv.platform;
+        const bool okBottom = (wr.bottom < g_screenH);
+        const bool okLeft   = (wr.left   > 0);
+        const bool okRight  = (wr.right  < g_screenW);
+
+        float minP = 0.0f;
+        int axis = -1; // 0=上方 1=下方 2=左侧 3=右侧
+        if (okTop)               { minP = pTop;    axis = 0; }
+        if (okBottom && (axis < 0 || pBottom < minP)) { minP = pBottom; axis = 1; }
+        if (okLeft   && (axis < 0 || pLeft   < minP)) { minP = pLeft;   axis = 2; }
+        if (okRight  && (axis < 0 || pRight  < minP)) { minP = pRight;  axis = 3; }
+        if (axis < 0) continue;                // 四条边都不在屏幕里 -> 当作背景
 
         // ---- 窗口自己在水平滑动时, 强制按水平轴解算 ----
         // 窗口矩形每 WINDOW_SCAN_SEC(0.1s) 才采样一次, 快速拖动时一帧能跳几十像素,
@@ -659,8 +714,9 @@ static void CollideWithWindows(Sprite* s)
             const float wdy = (float)(wv.rect.top  - wv.prevRect.top);
             if (fabsf(wdx) > 2.0f && fabsf(wdx) >= fabsf(wdy)) {
                 const int   want = (wdx > 0.0f) ? 2 : 3;   // 窗口右移 -> 用左面推
+                const bool  ok   = (want == 2) ? okLeft : okRight;
                 const float pen  = (want == 2) ? pLeft : pRight;
-                if (pen > 0.0f && pen <= (float)s->w) axis = want;
+                if (ok && pen > 0.0f && pen <= (float)s->w) axis = want;
             }
         }
 
