@@ -1540,6 +1540,7 @@ static void CollideWithWindows(Sprite* s, float prevX, float prevBottom)
 
         if (axis < 0) {
             // ---- 上一拍就已经在窗口肚子里了 -> 退回最小穿透, 但要带护栏 ----
+            // 四条边都必须"穿透深度不超过一个身位", 顶边也不例外。
             // 顶边: 上面放得下这个精灵才算(TopEdgeFits)。
             // 其余边: 必须在工作区内; 而且穿透深度不能超过一个身位, 否则
             //         "最小穿透"会把一个本来就待在窗口肚子里的精灵整个挪到
@@ -1547,12 +1548,23 @@ static void CollideWithWindows(Sprite* s, float prevX, float prevBottom)
             //         深陷其中的干脆不解析, 让它按物理自己落出去。
             //         例: 通知中心 (2200,0)-(2560,1392) 的右边和底边都贴着工作区
             //         边界, 只有左边的竖边是"实墙"。
+            //
+            // ★ 顶边的深度护栏是后补的, 缺了它就是"用窗口侧方撞 -> 精灵瞬移到
+            //   窗口上方": 窗口横移够快会先把精灵打成"被创飞"(gravity > 0),
+            //   而只有 gravity > 0 的精灵才走这个函数; 下一拍精灵还在窗口身体里
+            //   (窗口从侧面扫过来 = 精灵上一拍本来就和窗口横向重叠, 四条"从哪面
+            //   进来"的判据全都为假), 于是落进这个回退。窗口越高 pTop 越大,
+            //   而 okBottom/okLeft/okRight 都被身位卡掉了, 顶边反而成了唯一候选,
+            //   精灵被整个搬到 wr.top - h。加上深度限制后, 深陷其中就不解析,
+            //   精灵按物理自己飞出去, 不会再跳。
+            //
             // 窗口底边: 只认"精灵相对窗口在往上走"(从下面撞上来)。不加这一条,
             //         一个往下穿过窗口的精灵会在退出底边的瞬间被"啪"地按到
             //         wr.bottom 上, 看起来就是无端跳一下。
             const float relVy = s->vy -
                 (wv.hasPrev ? (float)(wv.rect.top - wv.prevRect.top) / g_scanDt : 0.0f);
-            const bool okTop    = TopEdgeFits(wv, s->h) && TopEdgeVisibleAt(wv, s->x + s->w * 0.5f);
+            const bool okTop    = TopEdgeFits(wv, s->h) && (pTop <= (float)s->h) &&
+                                  TopEdgeVisibleAt(wv, s->x + s->w * 0.5f);
             const bool okBottom = (wr.bottom < g_screenH) && (pBottom <= (float)s->h) &&
                                   (relVy < 0.0f);
             const bool okLeft   = (wr.left   > 0)         && (pLeft   <= (float)s->w);
