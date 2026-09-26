@@ -310,6 +310,27 @@ static bool SweptDownPastTop(const WindowInfo& wv, float prevBottom, float newBo
     return (newBottom > curTop && prevBottom <= refTop);
 }
 
+// 窗口顶边"往上顶"精灵: 窗口在上升, 顶边这一拍从精灵身体里扫过去。
+//
+// SweptDownPastTop 的前提是"精灵底边上一拍还在顶边之上"。可精灵常常是**停在
+// 屏幕底部(或别的平台上)不动的**: 窗口顶边从下面升上来时, 第一拍就可能已经越过
+// 精灵底边(窗口上一拍还在工作区外 / 刚进列表, 没有记录), 之后 prevBottom 永远
+// 大于参照顶边 —— 判据一直不成立, 顶边直接从精灵身上升过去。
+// 用户看到的就是"接不住也推不动": 顶边扫过图片, 图片纹丝不动。
+//
+// 所以按扫掠本身判: 顶边这一拍扫过的竖直线段 [curTop, prevTop] 与精灵身体
+// [prevBottom - h, prevBottom] 相交, 并且精灵底边现在还在新顶边之下, 就把它抬到
+// 新顶边上。顶边本来就远在精灵上方的(图片整个在窗口肚子里)不算 —— 那是瞬移。
+static bool RisingTopLifts(const WindowInfo& wv, int h, float prevBottom, float newBottom)
+{
+    if (!wv.hasPrev) return false;
+    const float curTop  = (float)wv.rect.top;
+    const float prevTop = (float)wv.prevRect.top;
+    if (curTop >= prevTop) return false;            // 没在上升
+    if (newBottom <= curTop) return false;          // 精灵底边还在顶边之上
+    return (prevBottom - (float)h) <= prevTop;      // 顶边这一拍确实扫进了精灵身体
+}
+
 // 这条顶边能不能给"高 h 的精灵"当落脚点 —— 顶边上面得放得下它。
 //
 // 刻意按**精灵自己的高度**算, 而不是用全局的 wv.platform:
@@ -326,9 +347,12 @@ static bool TopEdgeFits(const WindowInfo& wv, int h)
 // SweptDownPastTop 则只管穿越本身, 用来避免把图片甩到窗口下方/侧方:
 // 就算这窗口放不下(顶边贴着屏幕上沿、太小、最大化…), 也绝不能因为它
 // 而把图片瞬移到别处 —— 宁可让它按物理落出去。
+// 两条判据取或: 精灵掉下来接住, 或者窗口顶边升上来把精灵顶起来。
 static bool CrossesTopEdge(const WindowInfo& wv, int h, float prevBottom, float newBottom)
 {
-    return TopEdgeFits(wv, h) && SweptDownPastTop(wv, prevBottom, newBottom);
+    if (!TopEdgeFits(wv, h)) return false;
+    return SweptDownPastTop(wv, prevBottom, newBottom) ||
+           RisingTopLifts(wv, h, prevBottom, newBottom);
 }
 
 // 在所有够格的窗口里挑出"这一帧该落在它顶边上"的那一个(没有则 nullptr)。
@@ -804,7 +828,8 @@ static void CollideWithWindows(Sprite* s, float prevBottom)
         // 不满足就退到下面的最小穿透深度, 而那边的穿透深度上界会保证它
         // 不会把精灵整个挪到另一条边上去。
         if (TopEdgeFits(wv, s->h) &&
-            SweptDownPastTop(wv, prevBottom, s->y + s->h) &&
+            (SweptDownPastTop(wv, prevBottom, s->y + s->h) ||
+             RisingTopLifts(wv, s->h, prevBottom, s->y + s->h)) &&
             TopEdgeVisibleAt(wv, s->x + s->w * 0.5f))
         {
             s->y = (float)wr.top - (float)s->h;
