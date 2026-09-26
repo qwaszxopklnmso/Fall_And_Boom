@@ -670,6 +670,9 @@ struct WindowInfo {
     // 但它们**都必须继续参与遮挡判定**: 一旦丢掉, 它们背后被完全遮盖的窗口
     // 就会被误判成可见平台, 出现穿模的物理碰撞。
     bool platform = true;
+    // 这个窗口把整个工作区都盖住了(无边框全屏 / 最大化)。
+    // 这种窗口一律算"遮挡", 不看它的扩展样式 —— 见 BlocksAsOccluder()。
+    bool coversWorkArea = false;
     // Z 序更高的窗口压在本窗口上的矩形(交集)。用来判断"顶边哪一段真的看得见"
     std::vector<RECT> occluders;
 };
@@ -693,10 +696,21 @@ static HWND g_bandHwnd = nullptr;
 // 现象就是"拖动时上缘接不住、也推不动, 松开鼠标立刻恢复"(浮层消失了)。
 // 侧缘不走遮挡判定, 所以一直正常 —— 用户实测正是如此。
 // 真正的"另一个实心窗口压在上面"(浏览器/编辑器/资源管理器)不受影响, 照旧遮挡。
-static bool BlocksAsOccluder(HWND hwnd)
+//
+// ★ 但"铺满整个工作区"的窗口必须无条件算遮挡, 不能看样式。
+//   很多"窗口化全屏"的应用(UWP / WinUI3 / 用 DirectComposition 合成的游戏、
+//   播放器)本身就带 WS_EX_NOREDIRECTIONBITMAP / WS_EX_LAYERED。它们确确实实
+//   盖住了后面的一切, 却被上面两条挡在遮挡之外 —— 于是被它盖住的窗口保留了
+//   **看不见的碰撞箱**: 图片停在谁也看不见的顶边上, 悬在半空。
+//   复现: 全屏 c 盖住 b, 再把另一个窗口 a 提到 c 之上, 这时 b 依然在接图片。
+//   上面那两条要排除的是**面板大小的壳层浮层**(贴靠预览 / 输入法候选窗 /
+//   通知), 它们都盖不满工作区, 所以这条不会把它们放回来。
+static bool BlocksAsOccluder(const WindowInfo& wi)
 {
-    if (hwnd == g_foregroundHwnd) return true;        // 前台浮层(开始菜单…)照旧遮挡
-    const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (wi.hwnd == g_foregroundHwnd) return true;     // 前台浮层(开始菜单…)照旧遮挡
+    if (wi.coversWorkArea)           return true;     // 铺满工作区: 合成方式无关
+
+    const LONG_PTR ex = GetWindowLongPtrW(wi.hwnd, GWL_EXSTYLE);
     if (ex & WS_EX_NOREDIRECTIONBITMAP) return false; // 合成浮层
     if (ex & WS_EX_LAYERED)             return false; // 半透明层: 看得见后面, 不算压住
     return true;
@@ -762,7 +776,7 @@ static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
     //       但要记住被盖住的是哪一块，否则图片会停在看不见的顶边上（悬空）。
     std::vector<RECT> occ;
     for (const auto& wi : *list) {
-        if (!BlocksAsOccluder(wi.hwnd)) continue;
+        if (!BlocksAsOccluder(wi)) continue;
         RECT inter;
         if (!IntersectRect(&inter, &wi.rect, &r)) continue;
         if (inter.left   <= r.left  && inter.right  >= r.right &&
@@ -794,6 +808,11 @@ static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
     const bool bigEnough = (r.right - r.left) >= coarse &&
                            (r.bottom - r.top)  >= coarse;
     wi.platform  = (!fullscreen && !maximized && bigEnough && r.top >= coarse);
+    // 把整个工作区盖住 = 无边框全屏 / 最大化。这种窗口无条件算遮挡(见 BlocksAsOccluder)。
+    wi.coversWorkArea = (r.left   <= g_workX &&
+                         r.top    <= g_workY &&
+                         r.right  >= g_workX + g_screenW &&
+                         r.bottom >= g_workY + g_screenH);
     wi.occluders = std::move(occ);
     list->push_back(std::move(wi));
     return true;
