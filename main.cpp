@@ -620,6 +620,21 @@ static void CollideWithWindows(Sprite* s)
         if (pLeft   < minP) { minP = pLeft;   axis = 2; }
         if (pRight  < minP) { minP = pRight;  axis = 3; }
 
+        // ---- 窗口自己在水平滑动时, 强制按水平轴解算 ----
+        // 窗口矩形每 WINDOW_SCAN_SEC(0.1s) 才采样一次, 快速拖动时一帧能跳几十像素,
+        // 此时"最小穿透轴"会突然从水平变成垂直, 精灵会被甩到窗口的上/下边缘。
+        // 只在精灵确实是"刚从这个侧面被挤进来"时才改判(水平穿透不超过一个身位),
+        // 并且贴顶边的情况(axis==0, 正站在窗口上)完全不受影响。
+        if (wv.hasPrev && axis != 0) {
+            const float wdx = (float)(wv.rect.left - wv.prevRect.left);
+            const float wdy = (float)(wv.rect.top  - wv.prevRect.top);
+            if (fabsf(wdx) > 2.0f && fabsf(wdx) >= fabsf(wdy)) {
+                const int   want = (wdx > 0.0f) ? 2 : 3;   // 窗口右移 -> 用左面推
+                const float pen  = (want == 2) ? pLeft : pRight;
+                if (pen > 0.0f && pen <= (float)s->w) axis = want;
+            }
+        }
+
         if (axis == 0) {
             // 顶边被更高 Z 序窗口压住的那一段不是平台, 不要在这一格停下
             if (!TopEdgeVisibleAt(wv, s->x + s->w * 0.5f)) continue;
@@ -637,13 +652,15 @@ static void CollideWithWindows(Sprite* s)
             s->y = (float)wr.bottom;
             if (s->vy < 0) s->vy = -s->vy * 0.4f;
         } else if (axis == 2) {
-            // 从左侧撞到窗口右边缘
-            s->x = (float)wr.right;
-            if (s->vx < 0) s->vx = -s->vx * 0.5f;
-        } else {
-            // 从右侧撞到窗口左边缘
+            // pLeft 最小 = 精灵右边缘刚越过窗口左边缘 -> 精灵是从左边进来的,
+            // 应该推回窗口左侧。原来写成了 wr.right, 于是精灵会瞬间穿到窗口另一头。
             s->x = (float)wr.left - s->w;
             if (s->vx > 0) s->vx = -s->vx * 0.5f;
+        } else {
+            // pRight 最小 = 窗口右边缘刚越过精灵左边缘 -> 精灵是从右边进来的,
+            // 应该推回窗口右侧。原来写成了 wr.left - s->w, 同样是穿到另一头。
+            s->x = (float)wr.right;
+            if (s->vx < 0) s->vx = -s->vx * 0.5f;
         }
         break; // 一帧只处理一次窗口碰撞
     }
