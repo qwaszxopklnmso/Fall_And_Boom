@@ -157,12 +157,33 @@ struct WindowInfo {
 };
 
 static std::vector<WindowInfo> g_windowList;
+// 本次扫描时的前台窗口。有两个用途:
+//   · z-band 窗口去重(见下);
+//   · 遮挡判定里"用户正在操作的那个窗口"要特殊对待。
+static HWND g_foregroundHwnd = nullptr;
 // 本次扫描里由 GetForegroundWindow 补进来的 z-band 窗口(EnumWindows 看不到的),
 // 仅用于去重: 万一将来某个系统版本又开始把它枚举出来, 不至于变成两条记录。
 static HWND g_bandHwnd = nullptr;
 
 // 把一个窗口按统一规则判定, 通过则追加到 list 末尾。
 // 遮挡判定假设 "list 里已有的都是 Z 序更高的窗口", 所以调用顺序必须自上而下。
+
+// 这个窗口算不算"遮挡"。完全按 Z 序算是不行的:
+// Win11 的壳层浮层(开始菜单、通知中心、贴靠布局预览、输入法候选窗…)都是
+// **顶层合成层**, 用的是 WS_EX_NOREDIRECTIONBITMAP(有时再加 WS_EX_LAYERED)。
+// 它们会浮在正在被拖动的窗口上方, 一旦当成遮挡, 被拖窗口的**上缘就整段作废**:
+// 现象就是"拖动时上缘接不住、也推不动, 松开鼠标立刻恢复"(浮层消失了)。
+// 侧缘不走遮挡判定, 所以一直正常 —— 用户实测正是如此。
+// 真正的"另一个实心窗口压在上面"(浏览器/编辑器/资源管理器)不受影响, 照旧遮挡。
+static bool BlocksAsOccluder(HWND hwnd)
+{
+    if (hwnd == g_foregroundHwnd) return true;        // 前台浮层(开始菜单…)照旧遮挡
+    const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (ex & WS_EX_NOREDIRECTIONBITMAP) return false; // 合成浮层
+    if (ex & WS_EX_LAYERED)             return false; // 半透明层: 看得见后面, 不算压住
+    return true;
+}
+
 static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
 {
     if (!IsWindowVisible(hwnd)) return false;
@@ -223,6 +244,7 @@ static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
     //       但要记住被盖住的是哪一块，否则图片会停在看不见的顶边上（悬空）。
     std::vector<RECT> occ;
     for (const auto& wi : *list) {
+        if (!BlocksAsOccluder(wi.hwnd)) continue;
         RECT inter;
         if (!IntersectRect(&inter, &wi.rect, &r)) continue;
         if (inter.left   <= r.left  && inter.right  >= r.right &&
@@ -281,6 +303,9 @@ static BOOL CALLBACK ExistsProc(HWND hwnd, LPARAM lParam)
 static bool TopEdgeVisibleAt(const WindowInfo& wv, float cx)
 {
     if (wv.occluders.empty()) return true;
+    // 用户正在操作的那个窗口(拖动中的那个), 上缘永远作废不得 ——
+    // 拖动时壳层浮层随时可能飘在它上方, 一旦作废就是"拖着拖着上缘就接不住东西了"。
+    if (wv.hwnd == g_foregroundHwnd) return true;
     const LONG px = (LONG)std::lround(cx);
     const LONG py = wv.rect.top + 1;
     for (const RECT& o : wv.occluders) {
@@ -396,6 +421,7 @@ static void ScanWindows()
     // 因为它们在所有窗口之上, 必须先入列 —— 这样后面的窗口才会把被它们
     // 压住的那部分顶边算成"看不见", 不会出现悬空的停靠点。
     HWND fg = GetForegroundWindow();
+    g_foregroundHwnd = fg;
     g_bandHwnd = nullptr;
     if (fg) {
         ExistsCtx ec = { fg, false };
