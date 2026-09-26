@@ -29,6 +29,8 @@
 #include <cmath>
 #include <algorithm>
 #include <cwctype>
+#include <cwchar>
+#include <cstdlib>
 #include <cstring>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -38,57 +40,72 @@
 using namespace Gdiplus;
 
 // ------------------------------------------------------------
-// 可调参数
+// 可调参数(默认值)
 // ------------------------------------------------------------
+// ★ 这些参数的实际取值来自 exe 同目录的 config.ini —— 改完重启程序即可生效,
+//   不需要重新编译。config.ini 不存在时程序会自动按下面这些默认值生成一份,
+//   里面带中文说明; 已有的文件永远不会被覆盖。
+//   下面注释里的 "★" 是常用的几个。
 static const wchar_t* kOverlayClass = L"FallingImgOverlay";
 static const wchar_t* kMasterClass  = L"FallingImgMaster";
 
-static const int   MAX_IMAGES      = 10;
-static const int   MAX_FALLING     = 20;
-static const int   MAX_TOTAL       = 220;
-static const int   DEBRIS_COLS     = 4;
-static const int   DEBRIS_ROWS     = 4;
-static const float FALL_SPEED_MIN  = 405.0f;
-static const float FALL_SPEED_MAX  = 600.0f;
-static const int   SPRITE_SIZE     = 48;
-static const float WINDOW_SCAN_SEC = 0.08f;   // 窗口扫描间隔
-static const float FOLLOW_SANITY_VX = 20000.0f; // 跟随窗口时的荒谬值上限(挡矩形抖动)
-static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
+// ---- 图片与生成节奏 ----
+static int   MAX_IMAGES      = 15;    // ★ 最多加载几张图片(images 里按文件名排序取前 N 张)
+static int   SPRITE_SIZE     = 48;    // 每张图片的显示边长(像素)
+static float SPAWN_FIRST_DELAY = 0.8f;// 启动后第一张图片出现前的等待(秒)
+static float DROPTIME_MIN    = 0.2f;  // ★ 两次自动生成的最小间隔(秒)
+static float DROPTIME_MAX    = 1.3f;  // ★ 两次自动生成的最大间隔(秒)
+
+// ---- 下落速度与物理 ----
+static float FALL_SPEED_MIN  = 450.0f; // ★ 自然下落速度下限(像素/秒)
+static float FALL_SPEED_MAX  = 700.0f; // ★ 自然下落速度上限(像素/秒)
+static float WINDOW_SCAN_SEC = 0.09f;  // 窗口扫描间隔
+static float FOLLOW_SANITY_VX = 20000.0f; // 跟随窗口时的荒谬值上限(挡矩形抖动)
+static float SWEEP_MIN_VX    = 260.0f;  // 认定为"创飞"的窗口速度阈值
+static int   MAX_FALLING     = 20;    // 同屏"正在下落"的图片数量上限
+static int   MAX_TOTAL       = 220;   // 精灵总数上限(含爆炸碎片)
+static int   DEBRIS_COLS     = 4;     // 爆炸碎片列数
+static int   DEBRIS_ROWS     = 4;     // 爆炸碎片行数
 
 // ---- 生成方式开关 ----
 // 两个都开 = 平时自动随机下落, 想手动补一张就按 "."。
 // 关掉 AUTO  = 屏幕上一直干干净净, 只有按 "." 才会出现图片。
 // 关掉 MANUAL= 只能等自动随机下落, 连键盘钩子都不会装。
 // 两个都关   = 什么都不会生成(退出热键仍然有效)。
-static const bool  AUTO_SPAWN_ENABLED   = true;   // ★ 自动随机下落生成
-static const bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按 "." 在鼠标位置生成
+static bool  AUTO_SPAWN_ENABLED   = true;   // ★ 自动随机下落生成
+static bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按 "." 在鼠标位置生成
 
 // ---- 手动生成 ----
 // 按这个键, 在鼠标当前位置生成一张随机图片。
 // 用低级键盘钩子而不是 RegisterHotKey: 注册成热键会把这个键从所有程序那里
 // 抢走(打字、输入小数点就全废了), 钩子只是旁听, 按键照样传给别的程序。
-static const UINT  SPAWN_KEY_VK    = VK_OEM_PERIOD;   // 主键盘区的 "."
+static UINT  SPAWN_KEY_VK    = VK_OEM_PERIOD;   // 主键盘区的 "."
 
-static const float EXPLOSION_RADIUS    = 320.0f;  // 爆炸冲击波半径(像素)
-static const float EXPLOSION_POWER_MIN = 500.0f;  // 冲击波初速(范围边缘)
-static const float EXPLOSION_POWER_MAX = 900.0f;  // 冲击波初速(爆心附近)
-static const float EXPLOSION_GRAVITY   = 1400.0f; // 被炸飞之后的重力
+// 两次触发的最小间隔(毫秒)。长按的自动重复间隔只有 ~30ms, 会被这条挡掉;
+// 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
+static DWORD SPAWN_KEY_DEBOUNCE_MS = 250;
+
+// ---- 爆炸 / 撞击反馈 ----
+static float EXPLOSION_RADIUS    = 310.0f;  // 爆炸冲击波半径(像素)
+static float EXPLOSION_POWER_MIN = 500.0f;  // 冲击波初速(范围边缘)
+static float EXPLOSION_POWER_MAX = 900.0f;  // 冲击波初速(爆心附近)
+static float EXPLOSION_GRAVITY   = 1350.0f; // 被炸飞之后的重力
 
 // ---- 碰撞反馈: 闪一下再恢复(不再按剩余寿命长时间发灰) ----
-static const float HIT_FLASH_SEC = 0.40f;   // "闪一下"的总时长(秒)
-static const float HIT_DIM       = 0.50f;   // 闪到最浅时的 alpha
+static float HIT_FLASH_SEC = 0.40f;   // "闪一下"的总时长(秒)
+static float HIT_DIM       = 0.50f;   // 闪到最浅时的 alpha
 
 // ---- 临爆闪烁 ----
-static const float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁, 改这里
-static const float EXPLODE_BLINK_PERIOD = 0.6f;   // ★ 闪烁周期(秒)
-static const float EXPLODE_BLINK_MIN    = 0.45f;  // 闪烁时最浅的 alpha
+static float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁
+static float EXPLODE_BLINK_PERIOD = 0.6f;   // ★ 闪烁周期(秒)
+static float EXPLODE_BLINK_MIN    = 0.45f;  // 闪烁时最浅的 alpha
 
 // ---- 寿命 / 高速撞击伤害 ----
-static const float SPRITE_LIFE_SEC    = 5.0f;   // ★ 统一爆炸时间(秒, 所有图片一样)
-static const float FAST_HIT_SPEED     = 1650.0f; // ★ 相对速度超过它算"特别快的撞击"(像素/秒)
-                                                //   定在 800 是因为自由落体上限是 600,
-                                                //   所以普通下落互撞永远不会触发, 只有被撞飞/炸飞后才够
-static const float FAST_HIT_LIFE_LOSS = 2.5f;   // ★ 高速撞击扣掉的寿命(秒)
+static float SPRITE_LIFE_SEC    = 5.0f;    // ★ 统一爆炸时间(秒, 所有图片一样)
+static float FAST_HIT_SPEED     = 1650.0f; // ★ 相对速度超过它算"特别快的撞击"(像素/秒)
+                                           //   定得比自由落体上限高, 所以普通下落互撞
+                                           //   永远不会触发, 只有被撞飞/炸飞后才够
+static float FAST_HIT_LIFE_LOSS = 2.5f;    // ★ 高速撞击扣掉的寿命(秒)
 
 // ------------------------------------------------------------
 // 全局
@@ -117,6 +134,420 @@ static float g_scanTimer  = 0.0f;
 static float g_scanAccum  = 0.0f;    // 距上次窗口扫描累计的真实时间
 static float g_scanDt     = 0.1f;    // 上次扫描的真实间隔(用于换算窗口移动速度)
 static float g_displayTimer = 0.0f;  // 分辨率/工作区变化检查节流
+
+// ------------------------------------------------------------
+// config.ini: 启动时读一次, 覆盖上面的默认值
+// ------------------------------------------------------------
+// 只认 "键 = 值" 这一种行:
+//   · 键名忽略大小写、下划线、横线和空格(MAX_IMAGES / max-images / max images 等价)
+//   · '#' 或 ';' 开头的整行是注释; 行中间只有前面是空白才算注释
+//     (这样 SPAWN_KEY = ";" 这种值不会被误伤)
+//   · 认不出来的键、解析不了的值会被跳过并提示一次 —— 写错一个字符不影响启动
+//   · 删掉某一行 = 该参数用程序内置的默认值
+// 设计上刻意做成"坏值只影响这一项": 任何异常都能退回默认值继续跑。
+enum CfgKind { CFG_INT, CFG_FLOAT, CFG_BOOL, CFG_UINT, CFG_KEY };
+
+struct CfgEntry {
+    const wchar_t* key;      // 键名(写进 config.ini 的形式)
+    CfgKind        kind;
+    void*          ptr;
+    const wchar_t* comment;  // 写进 config.ini 的说明
+    int            group;    // 分组, 用来插小标题
+};
+
+static const wchar_t* const kCfgGroups[] = {
+    L"图片与生成节奏",
+    L"下落速度与物理",
+    L"生成方式(自动 / 手动)",
+    L"爆炸与撞击反馈",
+};
+
+static const CfgEntry kCfgTable[] = {
+    { L"MAX_IMAGES",            CFG_INT,   &MAX_IMAGES,            L"最多加载几张图片(images 里按文件名排序取前 N 张)", 0 },
+    { L"SPRITE_SIZE",           CFG_INT,   &SPRITE_SIZE,           L"每张图片的显示边长, 像素(改大改小都行, 会自动缩放)", 0 },
+    { L"SPAWN_FIRST_DELAY",     CFG_FLOAT, &SPAWN_FIRST_DELAY,     L"启动后第一张图片出现前的等待, 秒", 0 },
+    { L"DROPTIME_MIN",          CFG_FLOAT, &DROPTIME_MIN,          L"两次自动生成的最小间隔, 秒(自然掉落快慢主要看这两个)", 0 },
+    { L"DROPTIME_MAX",          CFG_FLOAT, &DROPTIME_MAX,          L"两次自动生成的最大间隔, 秒", 0 },
+
+    { L"FALL_SPEED_MIN",        CFG_FLOAT, &FALL_SPEED_MIN,        L"自然下落速度下限, 像素/秒", 1 },
+    { L"FALL_SPEED_MAX",        CFG_FLOAT, &FALL_SPEED_MAX,        L"自然下落速度上限, 像素/秒", 1 },
+    { L"WINDOW_SCAN_SEC",       CFG_FLOAT, &WINDOW_SCAN_SEC,       L"窗口位置扫描间隔, 秒(越小越跟手, 也越费 CPU)", 1 },
+    { L"SWEEP_MIN_VX",          CFG_FLOAT, &SWEEP_MIN_VX,          L"窗口横向速度超过它就把图片\"创飞\", 像素/秒", 1 },
+    { L"FOLLOW_SANITY_VX",      CFG_FLOAT, &FOLLOW_SANITY_VX,      L"跟随窗口时的荒谬速度上限, 挡窗口矩形抖动用", 1 },
+    { L"MAX_FALLING",           CFG_INT,   &MAX_FALLING,           L"同屏\"正在下落\"的图片数量上限", 1 },
+    { L"MAX_TOTAL",             CFG_INT,   &MAX_TOTAL,             L"精灵总数上限(含爆炸碎片)", 1 },
+    { L"DEBRIS_COLS",           CFG_INT,   &DEBRIS_COLS,           L"爆炸碎片列数", 1 },
+    { L"DEBRIS_ROWS",           CFG_INT,   &DEBRIS_ROWS,           L"爆炸碎片行数", 1 },
+
+    { L"AUTO_SPAWN_ENABLED",    CFG_BOOL,  &AUTO_SPAWN_ENABLED,    L"自动随机下落 true / false", 2 },
+    { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"按下面那个键在鼠标位置生成 true / false", 2 },
+    { L"SPAWN_KEY",             CFG_KEY,   &SPAWN_KEY_VK,          L"手动生成按键: 一个字符(如 \".\" \"F\" \"1\")或虚拟键码数字", 2 },
+    { L"SPAWN_KEY_DEBOUNCE_MS", CFG_UINT,  &SPAWN_KEY_DEBOUNCE_MS, L"同一个键两次触发的最小间隔, 毫秒(挡长按重复)", 2 },
+
+    { L"EXPLOSION_RADIUS",      CFG_FLOAT, &EXPLOSION_RADIUS,      L"爆炸冲击波半径, 像素", 3 },
+    { L"EXPLOSION_POWER_MIN",   CFG_FLOAT, &EXPLOSION_POWER_MIN,   L"冲击波初速(范围边缘), 像素/秒", 3 },
+    { L"EXPLOSION_POWER_MAX",   CFG_FLOAT, &EXPLOSION_POWER_MAX,   L"冲击波初速(爆心附近), 像素/秒", 3 },
+    { L"EXPLOSION_GRAVITY",     CFG_FLOAT, &EXPLOSION_GRAVITY,     L"被炸飞之后的重力", 3 },
+    { L"HIT_FLASH_SEC",         CFG_FLOAT, &HIT_FLASH_SEC,         L"被撞后\"闪一下\"的时长, 秒", 3 },
+    { L"HIT_DIM",               CFG_FLOAT, &HIT_DIM,               L"闪到最浅时的 alpha, 0~1", 3 },
+    { L"EXPLODE_WARN_SEC",      CFG_FLOAT, &EXPLODE_WARN_SEC,      L"爆炸前多少秒开始闪烁", 3 },
+    { L"EXPLODE_BLINK_PERIOD",  CFG_FLOAT, &EXPLODE_BLINK_PERIOD,  L"闪烁周期, 秒", 3 },
+    { L"EXPLODE_BLINK_MIN",     CFG_FLOAT, &EXPLODE_BLINK_MIN,     L"闪烁时最浅的 alpha, 0~1", 3 },
+    { L"SPRITE_LIFE_SEC",       CFG_FLOAT, &SPRITE_LIFE_SEC,       L"每张图片存活几秒后爆炸", 3 },
+    { L"FAST_HIT_SPEED",        CFG_FLOAT, &FAST_HIT_SPEED,        L"相对速度超过它算\"特别快的撞击\", 像素/秒", 3 },
+    { L"FAST_HIT_LIFE_LOSS",    CFG_FLOAT, &FAST_HIT_LIFE_LOSS,    L"高速撞击扣掉的寿命, 秒", 3 },
+};
+
+// ---- 小工具 ----
+static std::wstring ExeDir()
+{
+    wchar_t buf[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    std::wstring d(buf, n);
+    const size_t p = d.find_last_of(L"\\/");
+    return (p == std::wstring::npos) ? d : d.substr(0, p);
+}
+
+static std::wstring TrimW(const std::wstring& s)
+{
+    size_t a = 0, b = s.size();
+    while (a < b && iswspace(s[a])) ++a;
+    while (b > a && iswspace(s[b - 1])) --b;
+    return s.substr(a, b - a);
+}
+
+static std::wstring NormKey(const std::wstring& s)
+{
+    std::wstring r;
+    for (wchar_t ch : s) {
+        if (ch == L' ' || ch == L'\t' || ch == L'-' || ch == L'_') continue;
+        r.push_back((wchar_t)towupper(ch));
+    }
+    return r;
+}
+
+static std::wstring LowerW(const std::wstring& s)
+{
+    std::wstring r;
+    for (wchar_t ch : s) r.push_back((wchar_t)towlower(ch));
+    return r;
+}
+
+static bool ParseCfgInt(const std::wstring& v, int* out)
+{
+    wchar_t* end = nullptr;
+    const long long x = wcstoll(v.c_str(), &end, 0);   // 支持 0x 前缀
+    if (end == v.c_str()) return false;
+    while (*end && iswspace(*end)) ++end;
+    if (*end) return false;
+    *out = (int)x;
+    return true;
+}
+
+static bool ParseCfgUInt(const std::wstring& v, unsigned long* out)
+{
+    wchar_t* end = nullptr;
+    const unsigned long long x = wcstoull(v.c_str(), &end, 0);
+    if (end == v.c_str()) return false;
+    while (*end && iswspace(*end)) ++end;
+    if (*end) return false;
+    *out = (unsigned long)x;
+    return true;
+}
+
+static bool ParseCfgFloat(const std::wstring& v, float* out)
+{
+    wchar_t* end = nullptr;
+    const double x = wcstod(v.c_str(), &end);
+    if (end == v.c_str()) return false;
+    while (*end && iswspace(*end)) ++end;
+    if (*end) return false;
+    *out = (float)x;
+    return true;
+}
+
+static bool ParseCfgBool(const std::wstring& v, bool* out)
+{
+    const std::wstring s = LowerW(v);
+    if (s == L"1" || s == L"true" || s == L"yes" || s == L"on" || s == L"开") { *out = true;  return true; }
+    if (s == L"0" || s == L"false" || s == L"no" || s == L"off" || s == L"关") { *out = false; return true; }
+    return false;
+}
+
+// 按键: 优先当成"一个字符"(交给 VkKeyScanW 翻译), 否则当成虚拟键码数字
+static bool ParseCfgKey(const std::wstring& v, UINT* out)
+{
+    std::wstring s = v;
+    if (s.size() >= 2 &&
+        ((s.front() == L'"' && s.back() == L'"') || (s.front() == L'\'' && s.back() == L'\'')))
+        s = s.substr(1, s.size() - 2);
+
+    if (s.size() == 1) {
+        const SHORT r = VkKeyScanW(s[0]);
+        if (r == -1) return false;
+        *out = (UINT)(r & 0xFF);
+        return true;
+    }
+    int n = 0;
+    if (ParseCfgInt(s, &n) && n > 0 && n < 256) { *out = (UINT)n; return true; }
+    return false;
+}
+
+static std::string WToUtf8(const std::wstring& s)
+{
+    if (s.empty()) return std::string();
+    const int n = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return std::string();
+    std::string r((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), &r[0], n, nullptr, nullptr);
+    return r;
+}
+
+static std::wstring DecodeText(const std::string& raw)
+{
+    size_t off = 0;
+    if (raw.size() >= 3 &&
+        (unsigned char)raw[0] == 0xEF && (unsigned char)raw[1] == 0xBB && (unsigned char)raw[2] == 0xBF)
+        off = 3;
+
+    const char* p = raw.data() + off;
+    const int   len = (int)(raw.size() - off);
+    if (len <= 0) return L"";
+
+    // 先按 UTF-8 解; 解不动(比如记事本存成 GBK)就退回系统代码页。
+    int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, p, len, nullptr, 0);
+    UINT cp = CP_UTF8;
+    if (need <= 0) { cp = CP_ACP; need = MultiByteToWideChar(cp, 0, p, len, nullptr, 0); }
+    if (need <= 0) return L"";
+
+    std::wstring w((size_t)need, L'\0');
+    MultiByteToWideChar(cp, 0, p, len, &w[0], need);
+    return w;
+}
+
+static bool ReadWholeFile(const std::wstring& path, std::string& out)
+{
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    LARGE_INTEGER sz = {};
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart > 4 * 1024 * 1024) { CloseHandle(h); return false; }
+
+    out.assign((size_t)sz.QuadPart, '\0');
+    DWORD got = 0;
+    const bool ok = out.empty() ||
+        (ReadFile(h, &out[0], (DWORD)out.size(), &got, nullptr) && got == out.size());
+    CloseHandle(h);
+    return ok;
+}
+
+// 把当前值写回 config.ini 的文本形式
+static std::wstring CfgValueText(const CfgEntry& e)
+{
+    wchar_t buf[64] = {};
+    switch (e.kind) {
+    case CFG_INT:   swprintf(buf, 64, L"%d", *(const int*)e.ptr);   return buf;
+    case CFG_UINT:  swprintf(buf, 64, L"%lu", *(const DWORD*)e.ptr); return buf;
+    case CFG_FLOAT: swprintf(buf, 64, L"%g", (double)*(const float*)e.ptr); return buf;
+    case CFG_BOOL:  return *(const bool*)e.ptr ? L"true" : L"false";
+    case CFG_KEY: {
+        const UINT vk = *(const UINT*)e.ptr;
+        static const wchar_t* kCand =
+            L"abcdefghijklmnopqrstuvwxyz0123456789.,;'[]\\/-=`";
+        for (const wchar_t* p = kCand; *p; ++p) {
+            const SHORT r = VkKeyScanW(*p);
+            if (r != -1 && (UINT)(r & 0xFF) == vk) {
+                std::wstring s = L"\"";
+                s.push_back(*p);
+                s.push_back(L'"');
+                return s;
+            }
+        }
+        swprintf(buf, 64, L"%u", vk);
+        return buf;
+    }
+    }
+    return L"";
+}
+
+static bool WriteDefaultConfig(const std::wstring& path)
+{
+    std::wstring t;
+    t += L"# ============================================================\r\n";
+    t += L"#  Falling Images  配置文件\r\n";
+    t += L"#  改完保存 -> 重启程序生效 (不用重新编译, 也不用重新下载)\r\n";
+    t += L"#\r\n";
+    t += L"#  格式:   键 = 值\r\n";
+    t += L"#  '#' 或 ';' 开头的整行是注释; 行中间只有前面是空白才算注释\r\n";
+    t += L"#  删掉某一行 = 该参数用程序内置的默认值\r\n";
+    t += L"#  写错的键/值会被忽略并在启动时提示, 不影响程序运行\r\n";
+    t += L"#\r\n";
+    t += L"#  本文件由程序自动生成, 只在它不存在时创建, 永远不会覆盖你的修改。\r\n";
+    t += L"# ============================================================\r\n";
+
+    int lastGroup = -1;
+    for (const auto& e : kCfgTable) {
+        if (e.group != lastGroup) {
+            lastGroup = e.group;
+            t += L"\r\n# ---- ";
+            t += kCfgGroups[e.group];
+            t += L" ----\r\n";
+        }
+        std::wstring line = e.key;
+        line += L" = ";
+        line += CfgValueText(e);
+        while (line.size() < 34) line.push_back(L' ');
+        line += L"# ";
+        line += e.comment;
+        line += L"\r\n";
+        t += line;
+    }
+
+    std::string bytes;
+    bytes += "\xEF\xBB\xBF";          // UTF-8 BOM, 让记事本认得出中文注释
+    bytes += WToUtf8(t);
+
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);   // CREATE_NEW: 绝不覆盖
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const bool ok = WriteFile(h, bytes.data(), (DWORD)bytes.size(), &written, nullptr) != 0;
+    CloseHandle(h);
+    return ok;
+}
+
+static bool ApplyCfgValue(const CfgEntry& e, const std::wstring& v)
+{
+    switch (e.kind) {
+    case CFG_INT:   { int x;                  if (!ParseCfgInt(v, &x))   return false; *(int*)e.ptr   = x; return true; }
+    case CFG_UINT:  { unsigned long x;        if (!ParseCfgUInt(v, &x))  return false; *(DWORD*)e.ptr = (DWORD)x; return true; }
+    case CFG_FLOAT: { float x;                if (!ParseCfgFloat(v, &x)) return false; *(float*)e.ptr = x; return true; }
+    case CFG_BOOL:  { bool x;                 if (!ParseCfgBool(v, &x))  return false; *(bool*)e.ptr  = x; return true; }
+    case CFG_KEY:   { UINT x;                 if (!ParseCfgKey(v, &x))   return false; *(UINT*)e.ptr  = x; return true; }
+    }
+    return false;
+}
+
+// 兜底: 把明显不合理的值夹回可用范围, 免得写错一个数就让程序崩掉/卡死
+static void SanitizeConfig()
+{
+    auto clampI = [](int& v, int lo, int hi) { if (v < lo) v = lo; if (v > hi) v = hi; };
+    auto clampF = [](float& v, float lo, float hi) {
+        if (!(v == v)) v = lo;                       // NaN
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+    };
+
+    clampI(MAX_IMAGES,  1, 512);
+    clampI(SPRITE_SIZE, 8, 512);
+    clampI(MAX_FALLING, 1, 2000);
+    clampI(MAX_TOTAL,   8, 20000);
+    clampI(DEBRIS_COLS, 1, 16);
+    clampI(DEBRIS_ROWS, 1, 16);
+
+    clampF(SPAWN_FIRST_DELAY, 0.0f, 600.0f);
+    clampF(DROPTIME_MIN, 0.02f, 600.0f);
+    clampF(DROPTIME_MAX, 0.02f, 600.0f);
+    if (DROPTIME_MAX < DROPTIME_MIN) std::swap(DROPTIME_MAX, DROPTIME_MIN);
+
+    clampF(FALL_SPEED_MIN, 0.0f, 20000.0f);
+    clampF(FALL_SPEED_MAX, 0.0f, 20000.0f);
+    if (FALL_SPEED_MAX < FALL_SPEED_MIN) std::swap(FALL_SPEED_MAX, FALL_SPEED_MIN);
+
+    clampF(WINDOW_SCAN_SEC,  0.01f, 2.0f);
+    clampF(FOLLOW_SANITY_VX, 100.0f, 10000000.0f);
+    clampF(SWEEP_MIN_VX,     0.0f, 1000000.0f);
+
+    clampF(EXPLOSION_RADIUS,    0.0f, 20000.0f);
+    clampF(EXPLOSION_POWER_MIN, 0.0f, 20000.0f);
+    clampF(EXPLOSION_POWER_MAX, 0.0f, 20000.0f);
+    if (EXPLOSION_POWER_MAX < EXPLOSION_POWER_MIN) std::swap(EXPLOSION_POWER_MAX, EXPLOSION_POWER_MIN);
+    clampF(EXPLOSION_GRAVITY, -20000.0f, 20000.0f);
+
+    clampF(HIT_FLASH_SEC, 0.0f, 60.0f);
+    clampF(HIT_DIM,       0.0f, 1.0f);
+
+    clampF(EXPLODE_WARN_SEC,    0.0f, 3600.0f);
+    clampF(EXPLODE_BLINK_PERIOD, 0.02f, 600.0f);
+    clampF(EXPLODE_BLINK_MIN,   0.0f, 1.0f);
+
+    clampF(SPRITE_LIFE_SEC, 0.2f, 36000.0f);
+    clampF(FAST_HIT_SPEED,  0.0f, 1000000.0f);
+    clampF(FAST_HIT_LIFE_LOSS, 0.0f, SPRITE_LIFE_SEC);
+
+    if (SPAWN_KEY_DEBOUNCE_MS > 10000) SPAWN_KEY_DEBOUNCE_MS = 10000;
+    if (SPAWN_KEY_VK == 0 || SPAWN_KEY_VK > 255) SPAWN_KEY_VK = VK_OEM_PERIOD;
+}
+
+static void LoadConfig()
+{
+    const std::wstring path = ExeDir() + L"\\config.ini";
+
+    std::string raw;
+    if (!ReadWholeFile(path, raw)) {
+        // 第一次运行(或文件被删了): 生成一份带说明的默认配置, 下次启动就能直接改
+        WriteDefaultConfig(path);
+        SanitizeConfig();
+        return;
+    }
+
+    const std::wstring text = DecodeText(raw);
+    std::vector<std::wstring> badKeys, badValues;
+
+    size_t i = 0;
+    while (i <= text.size()) {
+        const size_t nl = text.find(L'\n', i);
+        std::wstring line = text.substr(i, (nl == std::wstring::npos ? text.size() : nl) - i);
+        i = (nl == std::wstring::npos) ? text.size() + 1 : nl + 1;
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+
+        // 去注释
+        for (size_t k = 0; k < line.size(); ++k) {
+            if (line[k] == L'#' || line[k] == L';') {
+                if (k == 0 || iswspace(line[k - 1])) { line.erase(k); break; }
+            }
+        }
+
+        const std::wstring t = TrimW(line);
+        if (t.empty()) continue;
+
+        // 顺手容忍 [小节标题] 这种习惯写法, 直接跳过
+        if (t.front() == L'[' && t.back() == L']') continue;
+
+        const size_t eq = t.find(L'=');
+        if (eq == std::wstring::npos) { badKeys.push_back(t); continue; }
+
+        const std::wstring key = NormKey(t.substr(0, eq));
+        const std::wstring val = TrimW(t.substr(eq + 1));
+        if (key.empty()) continue;
+
+        const CfgEntry* hit = nullptr;
+        for (const auto& en : kCfgTable)
+            if (key == NormKey(en.key)) { hit = &en; break; }
+
+        if (!hit) { badKeys.push_back(TrimW(t.substr(0, eq))); continue; }
+        if (!ApplyCfgValue(*hit, val))
+            badValues.push_back(std::wstring(hit->key) + L" = " + val);
+    }
+
+    SanitizeConfig();
+
+    if (!badKeys.empty() || !badValues.empty()) {
+        std::wstring msg = L"config.ini 里有读不懂的内容，这些设置已被忽略：\n\n";
+        size_t shown = 0;
+        for (const auto& k : badKeys) {
+            if (shown++ >= 8) { msg += L"  …\n"; break; }
+            msg += L"  · 不认识的键：" + k + L"\n";
+        }
+        for (const auto& v : badValues) {
+            if (shown++ >= 8) { msg += L"  …\n"; break; }
+            msg += L"  · 值看不懂：" + v + L"\n";
+        }
+        msg += L"\n其余设置照常生效，程序会继续运行。\n\n文件位置：\n" + path;
+        MessageBoxW(nullptr, msg.c_str(), L"Falling Images - 配置", MB_OK | MB_ICONWARNING);
+    }
+}
 
 // ------------------------------------------------------------
 // 小工具
@@ -1392,14 +1823,7 @@ static void PresentAll()
 // ------------------------------------------------------------
 static void LoadImages()
 {
-    wchar_t exePath[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-
-    std::wstring dir(exePath);
-    size_t p = dir.find_last_of(L"\\/");
-    if (p != std::wstring::npos) dir = dir.substr(0, p);
-
-    std::wstring imgDir = dir + L"\\images";
+    const std::wstring imgDir = ExeDir() + L"\\images";
 
     std::vector<std::wstring> files;
     WIN32_FIND_DATAW fd = {};
@@ -1542,7 +1966,7 @@ static POINT g_spawnPoint   = {};
 
 // 两次触发的最小间隔(毫秒)。长按的自动重复间隔只有 ~30ms, 会被这条挡掉;
 // 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
-static const DWORD SPAWN_KEY_DEBOUNCE_MS = 250;
+// (数值在 config.ini 的 SPAWN_KEY_DEBOUNCE_MS)
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam)
 {
@@ -1578,6 +2002,11 @@ static const HotkeyDef kHotkeys[] = {
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 {
     g_hInst = hInstance;
+
+    // ---- 先读 config.ini: 后面所有地方用的都是配置里的值 ----
+    // 放在最前面, 这样窗口尺寸、扫描间隔、寿命……全都统一来自同一份配置。
+    LoadConfig();
+
     ComGuard comGuard;                       // WIC 需要 COM
 
     GdiplusStartupInput gsi;
@@ -1690,7 +2119,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&prev);
 
-    g_spawnTimer = 0.8f;
+    g_spawnTimer = SPAWN_FIRST_DELAY;
 
     // ---- 装上低级键盘钩子(按 "." 在鼠标位置生成) ----
     // 放在这里是为了让上面几条出错退出的分支不用管它。
@@ -1740,7 +2169,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
             g_spawnTimer -= dt;
             if (g_spawnTimer <= 0.0f) {
                 SpawnFalling();
-                g_spawnTimer = RandF(0.9f, 2.0f);
+                g_spawnTimer = RandF(DROPTIME_MIN, DROPTIME_MAX);
             }
         }
 

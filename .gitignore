@@ -25,3 +25,9 @@ desktop.ini
 # ---- 不提交 ----
 AGENTS.md
 *.zip
+
+# ---- 从网页另存下来的参考资料（只是找素材用的，程序不读） ----
+images/*.html
+images/*_files/
+_cfgtest/
+_genscratch/
