@@ -51,6 +51,14 @@ static const float WINDOW_SCAN_SEC = 0.08f;   // 窗口扫描间隔
 static const float FOLLOW_MAX_VX   = 250.0f;  // 超过这个速度就不再"拖着走", 改为创飞
 static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
 
+// ---- 生成方式开关 ----
+// 两个都开 = 平时自动随机下落, 想手动补一张就按 "."。
+// 关掉 AUTO  = 屏幕上一直干干净净, 只有按 "." 才会出现图片。
+// 关掉 MANUAL= 只能等自动随机下落, 连键盘钩子都不会装。
+// 两个都关   = 什么都不会生成(退出热键仍然有效)。
+static const bool  AUTO_SPAWN_ENABLED   = true;   // ★ 自动随机下落生成
+static const bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按 "." 在鼠标位置生成
+
 // ---- 手动生成 ----
 // 按这个键, 在鼠标当前位置生成一张随机图片。
 // 用低级键盘钩子而不是 RegisterHotKey: 注册成热键会把这个键从所有程序那里
@@ -1452,8 +1460,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
     // ---- 装上低级键盘钩子(按 "." 在鼠标位置生成) ----
     // 放在这里是为了让上面几条出错退出的分支不用管它。
+    // 关掉手动生成就连钩子都不装 —— 免得白白往系统里挂一个全局键盘钩子。
     // 失败也不弹窗: 只是少一个手动生成的功能, 程序照常跑。
-    g_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
+    if (MANUAL_SPAWN_ENABLED)
+        g_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
 
     bool running = true;
     MSG msg = {};
@@ -1484,17 +1494,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         // ---- 按 "." 在鼠标位置生成一张随机图片 ----
         // 钩子回调里只记了位置, 真正干活放在这里。
         // 鼠标坐标是屏幕坐标, 减去 overlay 原点换成合成缓冲坐标。
-        if (g_spawnAtMouse) {
+        if (MANUAL_SPAWN_ENABLED && g_spawnAtMouse) {
             g_spawnAtMouse = false;
             SpawnFalling(true,
                          (float)(g_spawnPoint.x - g_workX),
                          (float)(g_spawnPoint.y - g_workY));
         }
 
-        g_spawnTimer -= dt;
-        if (g_spawnTimer <= 0.0f) {
-            SpawnFalling();
-            g_spawnTimer = RandF(0.9f, 2.0f);
+        // ---- 自动随机下落生成 ----
+        if (AUTO_SPAWN_ENABLED) {
+            g_spawnTimer -= dt;
+            if (g_spawnTimer <= 0.0f) {
+                SpawnFalling();
+                g_spawnTimer = RandF(0.9f, 2.0f);
+            }
         }
 
         UpdatePhysics(dt);

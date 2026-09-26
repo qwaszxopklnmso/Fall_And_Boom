@@ -91,6 +91,8 @@ cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
 | `EXPLODE_BLINK_PERIOD` | 0.6 | 闪烁周期（秒） |
 | `HIT_FLASH_SEC` / `HIT_DIM` | 0.40 / 0.50 | 被撞后闪光的时长 / 最浅 alpha |
 | `SPRITE_SIZE` | 48 | 图片缩放到的边长（像素） |
+| `AUTO_SPAWN_ENABLED` | `true` | 自动随机下落生成（关掉就只剩手动） |
+| `MANUAL_SPAWN_ENABLED` | `true` | 按 `.` 手动生成（关掉就只剩自动） |
 | `SPAWN_KEY_VK` | `VK_OEM_PERIOD` | 手动生成的按键（主键盘区 `.`） |
 | `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动生成的去抖间隔（毫秒） |
 | `MAX_IMAGES` | 10 | 最多加载几张图片 |
@@ -103,6 +105,18 @@ cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
 
 主键盘区的 `.` 每按一次就在鼠标当前位置生成一张随机图片（以光标为中心，
 会夹进工作区，不会生成到屏幕外）。长按的自动重复会被 250ms 去抖挡掉。
+
+自动生成和手动生成可以单独关掉，两个开关都在 `main.cpp` 顶部的「生成方式开关」：
+
+| `AUTO_SPAWN_ENABLED` | `MANUAL_SPAWN_ENABLED` | 效果 |
+|---|---|---|
+| `true` | `true` | 默认：自动随机下落，随时可以按 `.` 补一张 |
+| `false` | `true` | 屏幕一直干干净净，**只有按 `.` 才会出现图片** |
+| `true` | `false` | 只能等自动随机下落，连键盘钩子都不会装 |
+| `false` | `false` | 什么都不会生成（退出热键仍然有效） |
+
+关掉 `MANUAL_SPAWN_ENABLED` 时连 `WH_KEYBOARD_LL` 钩子都不装，
+不会白白往系统里挂一个全局键盘钩子。
 
 实现上不能用 `RegisterHotKey`：那会把这个键从**所有程序**手里抢走，
 打字、输入小数点就全废了。也不能靠 `WM_KEYDOWN` —— overlay 窗口带
