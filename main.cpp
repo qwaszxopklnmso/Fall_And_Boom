@@ -45,29 +45,23 @@ using namespace Gdiplus;
 // ★ 这些参数的实际取值来自 exe 同目录的 config.ini —— 改完重启程序即可生效,
 //   不需要重新编译。config.ini 不存在时程序会自动按下面这些默认值生成一份,
 //   里面带中文说明; 已有的文件永远不会被覆盖。
-//   下面注释里的 "★" 是常用的几个。
+//   配置文件按 "通用 / 方块 blocks / 爆炸物 explosives" 分了三段。
 static const wchar_t* kOverlayClass = L"FallingImgOverlay";
 static const wchar_t* kMasterClass  = L"FallingImgMaster";
 
-// ---- 图片与生成节奏 ----
-static int   MAX_IMAGES      = 15;    // ★ 最多加载几张图片(images 里按文件名排序取前 N 张)
-static int   SPRITE_SIZE     = 48;    // 每张图片的显示边长(像素)
+// ---- 通用 ----
 static float SPAWN_FIRST_DELAY = 0.8f;// 启动后第一张图片出现前的等待(秒)
 static float DROPTIME_MIN    = 0.2f;  // ★ 两次自动生成的最小间隔(秒)
 static float DROPTIME_MAX    = 1.3f;  // ★ 两次自动生成的最大间隔(秒)
-
-// ---- 下落速度与物理 ----
-static float FALL_SPEED_MIN  = 450.0f; // ★ 自然下落速度下限(像素/秒)
-static float FALL_SPEED_MAX  = 700.0f; // ★ 自然下落速度上限(像素/秒)
-static float WINDOW_SCAN_SEC = 0.09f;  // 窗口扫描间隔
+static float WINDOW_SCAN_SEC = 0.09f; // 窗口扫描间隔
 static float FOLLOW_SANITY_VX = 20000.0f; // 跟随窗口时的荒谬值上限(挡矩形抖动)
-static float SWEEP_MIN_VX    = 260.0f;  // 认定为"创飞"的窗口速度阈值
-static int   MAX_FALLING     = 20;    // 同屏"正在下落"的图片数量上限
+static float SWEEP_MIN_VX    = 260.0f;// 认定为"创飞"的窗口速度阈值
+static int   MAX_FALLING     = 20;    // 同屏"正在下落"的数量上限(方块 + 爆炸物)
 static int   MAX_TOTAL       = 220;   // 精灵总数上限(含爆炸碎片)
 static int   DEBRIS_COLS     = 4;     // 爆炸碎片列数
 static int   DEBRIS_ROWS     = 4;     // 爆炸碎片行数
 
-// ---- 生成方式开关 ----
+// 生成方式开关:
 // 两个都开 = 平时自动随机下落, 想手动补一张就按 "."。
 // 关掉 AUTO  = 屏幕上一直干干净净, 只有按 "." 才会出现图片。
 // 关掉 MANUAL= 只能等自动随机下落, 连键盘钩子都不会装。
@@ -75,7 +69,6 @@ static int   DEBRIS_ROWS     = 4;     // 爆炸碎片行数
 static bool  AUTO_SPAWN_ENABLED   = true;   // ★ 自动随机下落生成
 static bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按 "." 在鼠标位置生成
 
-// ---- 手动生成 ----
 // 按这个键, 在鼠标当前位置生成一张随机图片。
 // 用低级键盘钩子而不是 RegisterHotKey: 注册成热键会把这个键从所有程序那里
 // 抢走(打字、输入小数点就全废了), 钩子只是旁听, 按键照样传给别的程序。
@@ -85,27 +78,51 @@ static UINT  SPAWN_KEY_VK    = VK_OEM_PERIOD;   // 主键盘区的 "."
 // 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
 static DWORD SPAWN_KEY_DEBOUNCE_MS = 250;
 
-// ---- 爆炸 / 撞击反馈 ----
+// 碰撞反馈: 闪一下再恢复(不再按剩余寿命长时间发灰)
+static float HIT_FLASH_SEC = 0.40f;   // "闪一下"的总时长(秒)
+static float HIT_DIM       = 0.50f;   // 闪到最浅时的 alpha
+
+// ---- 方块 blocks (images\blocks) ----
+// 方块**没有引信**: 不会自己爆炸, 也不会闪。
+// 它只会被爆炸波及 —— 爆炸范围内的方块会被炸成碎片(见 BLOCK_DESTROY_IN_BLAST)。
+// 停稳之后 BLOCK_STAY_SEC 秒消失(淡出, 不是爆炸), 免得屏幕越堆越满。
+static bool  BLOCKS_ENABLED         = true;   // ★ 关掉就完全不生成方块
+static int   BLOCK_MAX_IMAGES       = 8;      // ★ blocks 文件夹最多读几张
+static int   BLOCK_SIZE             = 48;     // 方块显示边长(像素)
+static float BLOCK_SPAWN_WEIGHT     = 1.0f;   // ★ 生成权重, 和爆炸物按比例随机
+static float BLOCK_FALL_SPEED_MIN   = 450.0f; // 方块下落速度下限(像素/秒)
+static float BLOCK_FALL_SPEED_MAX   = 700.0f; // 方块下落速度上限(像素/秒)
+static float BLOCK_STAY_SEC         = 12.0f;  // 停稳后停留几秒消失(0 = 一直留着)
+static float BLOCK_FADE_SEC         = 1.5f;   // 消失前的淡出时长(秒)
+static bool  BLOCK_DESTROY_IN_BLAST = true;   // ★ 爆炸范围内的方块会被炸掉
+static bool  BLOCK_CHAIN_EXPLOSION  = true;   // ★ 被炸掉的方块自己也放冲击波(连锁)
+static float BLOCK_BLAST_RADIUS     = 150.0f; // 方块被炸时自己的冲击波半径
+static float BLOCK_BLAST_POWER_MIN  = 350.0f; // 方块的冲击波初速(范围边缘)
+static float BLOCK_BLAST_POWER_MAX  = 650.0f; // 方块的冲击波初速(爆心附近)
+static float BLOCK_BLAST_GRAVITY    = 1350.0f;// 被方块的爆炸炸飞之后的重力
+
+// ---- 爆炸物 explosives (images\explosives) ----
+static bool  EXPLOSIVES_ENABLED       = true; // ★ 关掉就只剩方块
+static int   EXPLOSIVE_MAX_IMAGES     = 15;   // ★ explosives 文件夹最多读几张
+static int   EXPLOSIVE_SIZE           = 48;   // 爆炸物显示边长(像素)
+static float EXPLOSIVE_SPAWN_WEIGHT   = 1.0f; // ★ 生成权重, 和方块按比例随机
+static float EXPLOSIVE_FALL_SPEED_MIN = 450.0f; // 爆炸物下落速度下限(像素/秒)
+static float EXPLOSIVE_FALL_SPEED_MAX = 700.0f; // 爆炸物下落速度上限(像素/秒)
+
+static float EXPLOSIVE_LIFE_SEC   = 5.0f;   // ★ 引信: 生成后几秒爆炸
+static float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁
+static float EXPLODE_BLINK_PERIOD = 0.6f;   // ★ 闪烁周期(秒)
+static float EXPLODE_BLINK_MIN    = 0.45f;  // 闪烁时最浅的 alpha
+
 static float EXPLOSION_RADIUS    = 310.0f;  // 爆炸冲击波半径(像素)
 static float EXPLOSION_POWER_MIN = 500.0f;  // 冲击波初速(范围边缘)
 static float EXPLOSION_POWER_MAX = 900.0f;  // 冲击波初速(爆心附近)
 static float EXPLOSION_GRAVITY   = 1350.0f; // 被炸飞之后的重力
 
-// ---- 碰撞反馈: 闪一下再恢复(不再按剩余寿命长时间发灰) ----
-static float HIT_FLASH_SEC = 0.40f;   // "闪一下"的总时长(秒)
-static float HIT_DIM       = 0.50f;   // 闪到最浅时的 alpha
-
-// ---- 临爆闪烁 ----
-static float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁
-static float EXPLODE_BLINK_PERIOD = 0.6f;   // ★ 闪烁周期(秒)
-static float EXPLODE_BLINK_MIN    = 0.45f;  // 闪烁时最浅的 alpha
-
-// ---- 寿命 / 高速撞击伤害 ----
-static float SPRITE_LIFE_SEC    = 5.0f;    // ★ 统一爆炸时间(秒, 所有图片一样)
 static float FAST_HIT_SPEED     = 1650.0f; // ★ 相对速度超过它算"特别快的撞击"(像素/秒)
                                            //   定得比自由落体上限高, 所以普通下落互撞
                                            //   永远不会触发, 只有被撞飞/炸飞后才够
-static float FAST_HIT_LIFE_LOSS = 2.5f;    // ★ 高速撞击扣掉的寿命(秒)
+static float FAST_HIT_LIFE_LOSS = 2.5f;    // ★ 高速撞击扣掉的引信时间(秒)
 
 // ------------------------------------------------------------
 // 全局
@@ -155,47 +172,74 @@ struct CfgEntry {
     int            group;    // 分组, 用来插小标题
 };
 
-static const wchar_t* const kCfgGroups[] = {
-    L"图片与生成节奏",
-    L"下落速度与物理",
-    L"生成方式(自动 / 手动)",
-    L"爆炸与撞击反馈",
+struct CfgGroup {
+    const wchar_t* title;   // 写进 config.ini 的分节标题
+    const wchar_t* descr;   // 标题下面那句说明
+};
+
+// 三个分节: 通用 / 方块 / 爆炸物。
+// config.ini 里用 "# --- 方块 blocks ---" 这样的注释行把三段分开。
+static const CfgGroup kCfgGroups[] = {
+    { L"通用 common",
+      L"两边都适用的东西: 生成节奏、窗口扫描、碰撞反馈、按键" },
+    { L"方块 blocks  (images\\blocks)",
+      L"不会自己爆炸, 也不会闪; 只有被爆炸波及时才会炸成碎片" },
+    { L"爆炸物 explosives  (images\\explosives)",
+      L"有引信, 时间到了自己爆炸, 并把范围内的一切炸飞" },
 };
 
 static const CfgEntry kCfgTable[] = {
-    { L"MAX_IMAGES",            CFG_INT,   &MAX_IMAGES,            L"最多加载几张图片(images 里按文件名排序取前 N 张)", 0 },
-    { L"SPRITE_SIZE",           CFG_INT,   &SPRITE_SIZE,           L"每张图片的显示边长, 像素(改大改小都行, 会自动缩放)", 0 },
+    // ---------------- 通用 ----------------
     { L"SPAWN_FIRST_DELAY",     CFG_FLOAT, &SPAWN_FIRST_DELAY,     L"启动后第一张图片出现前的等待, 秒", 0 },
-    { L"DROPTIME_MIN",          CFG_FLOAT, &DROPTIME_MIN,          L"两次自动生成的最小间隔, 秒(自然掉落快慢主要看这两个)", 0 },
+    { L"DROPTIME_MIN",          CFG_FLOAT, &DROPTIME_MIN,          L"两次自动生成的最小间隔, 秒(掉落快慢主要看这两个)", 0 },
     { L"DROPTIME_MAX",          CFG_FLOAT, &DROPTIME_MAX,          L"两次自动生成的最大间隔, 秒", 0 },
+    { L"WINDOW_SCAN_SEC",       CFG_FLOAT, &WINDOW_SCAN_SEC,       L"窗口位置扫描间隔, 秒(越小越跟手, 也越费 CPU)", 0 },
+    { L"SWEEP_MIN_VX",          CFG_FLOAT, &SWEEP_MIN_VX,          L"窗口横向速度超过它就把图片\"创飞\", 像素/秒", 0 },
+    { L"FOLLOW_SANITY_VX",      CFG_FLOAT, &FOLLOW_SANITY_VX,      L"跟随窗口时的荒谬速度上限, 挡窗口矩形抖动用", 0 },
+    { L"MAX_FALLING",           CFG_INT,   &MAX_FALLING,           L"同屏\"正在下落\"的数量上限(方块 + 爆炸物)", 0 },
+    { L"MAX_TOTAL",             CFG_INT,   &MAX_TOTAL,             L"精灵总数上限(含爆炸碎片)", 0 },
+    { L"DEBRIS_COLS",           CFG_INT,   &DEBRIS_COLS,           L"爆炸碎片列数", 0 },
+    { L"DEBRIS_ROWS",           CFG_INT,   &DEBRIS_ROWS,           L"爆炸碎片行数", 0 },
+    { L"HIT_FLASH_SEC",         CFG_FLOAT, &HIT_FLASH_SEC,         L"被撞后\"闪一下\"的时长, 秒", 0 },
+    { L"HIT_DIM",               CFG_FLOAT, &HIT_DIM,               L"闪到最浅时的 alpha, 0~1", 0 },
+    { L"AUTO_SPAWN_ENABLED",    CFG_BOOL,  &AUTO_SPAWN_ENABLED,    L"自动随机下落 true / false", 0 },
+    { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"按下面那个键在鼠标位置生成 true / false", 0 },
+    { L"SPAWN_KEY",             CFG_KEY,   &SPAWN_KEY_VK,          L"手动生成按键: 一个字符(如 \".\" \"F\" \"1\")或虚拟键码数字", 0 },
+    { L"SPAWN_KEY_DEBOUNCE_MS", CFG_UINT,  &SPAWN_KEY_DEBOUNCE_MS, L"同一个键两次触发的最小间隔, 毫秒(挡长按重复)", 0 },
 
-    { L"FALL_SPEED_MIN",        CFG_FLOAT, &FALL_SPEED_MIN,        L"自然下落速度下限, 像素/秒", 1 },
-    { L"FALL_SPEED_MAX",        CFG_FLOAT, &FALL_SPEED_MAX,        L"自然下落速度上限, 像素/秒", 1 },
-    { L"WINDOW_SCAN_SEC",       CFG_FLOAT, &WINDOW_SCAN_SEC,       L"窗口位置扫描间隔, 秒(越小越跟手, 也越费 CPU)", 1 },
-    { L"SWEEP_MIN_VX",          CFG_FLOAT, &SWEEP_MIN_VX,          L"窗口横向速度超过它就把图片\"创飞\", 像素/秒", 1 },
-    { L"FOLLOW_SANITY_VX",      CFG_FLOAT, &FOLLOW_SANITY_VX,      L"跟随窗口时的荒谬速度上限, 挡窗口矩形抖动用", 1 },
-    { L"MAX_FALLING",           CFG_INT,   &MAX_FALLING,           L"同屏\"正在下落\"的图片数量上限", 1 },
-    { L"MAX_TOTAL",             CFG_INT,   &MAX_TOTAL,             L"精灵总数上限(含爆炸碎片)", 1 },
-    { L"DEBRIS_COLS",           CFG_INT,   &DEBRIS_COLS,           L"爆炸碎片列数", 1 },
-    { L"DEBRIS_ROWS",           CFG_INT,   &DEBRIS_ROWS,           L"爆炸碎片行数", 1 },
+    // ---------------- 方块 blocks ----------------
+    { L"BLOCKS_ENABLED",         CFG_BOOL,  &BLOCKS_ENABLED,         L"false = 完全不生成方块(blocks 文件夹也不会读)", 1 },
+    { L"BLOCK_MAX_IMAGES",       CFG_INT,   &BLOCK_MAX_IMAGES,       L"blocks 文件夹最多读几张(按文件名排序)", 1 },
+    { L"BLOCK_SIZE",             CFG_INT,   &BLOCK_SIZE,             L"方块显示边长, 像素(会自动缩放)", 1 },
+    { L"BLOCK_SPAWN_WEIGHT",     CFG_FLOAT, &BLOCK_SPAWN_WEIGHT,     L"每张方块图的生成权重, 0 = 不出方块", 1 },
+    { L"BLOCK_FALL_SPEED_MIN",   CFG_FLOAT, &BLOCK_FALL_SPEED_MIN,   L"方块下落速度下限, 像素/秒", 1 },
+    { L"BLOCK_FALL_SPEED_MAX",   CFG_FLOAT, &BLOCK_FALL_SPEED_MAX,   L"方块下落速度上限, 像素/秒", 1 },
+    { L"BLOCK_STAY_SEC",         CFG_FLOAT, &BLOCK_STAY_SEC,         L"方块停稳后停留几秒消失(淡出, 不爆炸); 0 = 一直留着", 1 },
+    { L"BLOCK_FADE_SEC",         CFG_FLOAT, &BLOCK_FADE_SEC,         L"方块消失前的淡出时长, 秒(0 = 直接不见)", 1 },
+    { L"BLOCK_DESTROY_IN_BLAST", CFG_BOOL,  &BLOCK_DESTROY_IN_BLAST, L"爆炸范围内的方块会被炸掉 true / false", 1 },
+    { L"BLOCK_CHAIN_EXPLOSION",  CFG_BOOL,  &BLOCK_CHAIN_EXPLOSION,  L"被炸掉的方块自己也放冲击波(于是会连锁) true / false", 1 },
+    { L"BLOCK_BLAST_RADIUS",     CFG_FLOAT, &BLOCK_BLAST_RADIUS,     L"方块爆炸时自己的冲击波半径, 像素", 1 },
+    { L"BLOCK_BLAST_POWER_MIN",  CFG_FLOAT, &BLOCK_BLAST_POWER_MIN,  L"方块冲击波初速(范围边缘), 像素/秒", 1 },
+    { L"BLOCK_BLAST_POWER_MAX",  CFG_FLOAT, &BLOCK_BLAST_POWER_MAX,  L"方块冲击波初速(爆心附近), 像素/秒", 1 },
+    { L"BLOCK_BLAST_GRAVITY",    CFG_FLOAT, &BLOCK_BLAST_GRAVITY,    L"被方块炸飞之后的重力", 1 },
 
-    { L"AUTO_SPAWN_ENABLED",    CFG_BOOL,  &AUTO_SPAWN_ENABLED,    L"自动随机下落 true / false", 2 },
-    { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"按下面那个键在鼠标位置生成 true / false", 2 },
-    { L"SPAWN_KEY",             CFG_KEY,   &SPAWN_KEY_VK,          L"手动生成按键: 一个字符(如 \".\" \"F\" \"1\")或虚拟键码数字", 2 },
-    { L"SPAWN_KEY_DEBOUNCE_MS", CFG_UINT,  &SPAWN_KEY_DEBOUNCE_MS, L"同一个键两次触发的最小间隔, 毫秒(挡长按重复)", 2 },
-
-    { L"EXPLOSION_RADIUS",      CFG_FLOAT, &EXPLOSION_RADIUS,      L"爆炸冲击波半径, 像素", 3 },
-    { L"EXPLOSION_POWER_MIN",   CFG_FLOAT, &EXPLOSION_POWER_MIN,   L"冲击波初速(范围边缘), 像素/秒", 3 },
-    { L"EXPLOSION_POWER_MAX",   CFG_FLOAT, &EXPLOSION_POWER_MAX,   L"冲击波初速(爆心附近), 像素/秒", 3 },
-    { L"EXPLOSION_GRAVITY",     CFG_FLOAT, &EXPLOSION_GRAVITY,     L"被炸飞之后的重力", 3 },
-    { L"HIT_FLASH_SEC",         CFG_FLOAT, &HIT_FLASH_SEC,         L"被撞后\"闪一下\"的时长, 秒", 3 },
-    { L"HIT_DIM",               CFG_FLOAT, &HIT_DIM,               L"闪到最浅时的 alpha, 0~1", 3 },
-    { L"EXPLODE_WARN_SEC",      CFG_FLOAT, &EXPLODE_WARN_SEC,      L"爆炸前多少秒开始闪烁", 3 },
-    { L"EXPLODE_BLINK_PERIOD",  CFG_FLOAT, &EXPLODE_BLINK_PERIOD,  L"闪烁周期, 秒", 3 },
-    { L"EXPLODE_BLINK_MIN",     CFG_FLOAT, &EXPLODE_BLINK_MIN,     L"闪烁时最浅的 alpha, 0~1", 3 },
-    { L"SPRITE_LIFE_SEC",       CFG_FLOAT, &SPRITE_LIFE_SEC,       L"每张图片存活几秒后爆炸", 3 },
-    { L"FAST_HIT_SPEED",        CFG_FLOAT, &FAST_HIT_SPEED,        L"相对速度超过它算\"特别快的撞击\", 像素/秒", 3 },
-    { L"FAST_HIT_LIFE_LOSS",    CFG_FLOAT, &FAST_HIT_LIFE_LOSS,    L"高速撞击扣掉的寿命, 秒", 3 },
+    // ---------------- 爆炸物 explosives ----------------
+    { L"EXPLOSIVES_ENABLED",       CFG_BOOL,  &EXPLOSIVES_ENABLED,       L"false = 完全不生成爆炸物(explosives 文件夹也不会读)", 2 },
+    { L"EXPLOSIVE_MAX_IMAGES",     CFG_INT,   &EXPLOSIVE_MAX_IMAGES,     L"explosives 文件夹最多读几张(按文件名排序)", 2 },
+    { L"EXPLOSIVE_SIZE",           CFG_INT,   &EXPLOSIVE_SIZE,           L"爆炸物显示边长, 像素(会自动缩放)", 2 },
+    { L"EXPLOSIVE_SPAWN_WEIGHT",   CFG_FLOAT, &EXPLOSIVE_SPAWN_WEIGHT,   L"每张爆炸物图的生成权重, 0 = 不出爆炸物(和方块权重比大小)", 2 },
+    { L"EXPLOSIVE_FALL_SPEED_MIN", CFG_FLOAT, &EXPLOSIVE_FALL_SPEED_MIN, L"爆炸物下落速度下限, 像素/秒", 2 },
+    { L"EXPLOSIVE_FALL_SPEED_MAX", CFG_FLOAT, &EXPLOSIVE_FALL_SPEED_MAX, L"爆炸物下落速度上限, 像素/秒", 2 },
+    { L"EXPLOSIVE_LIFE_SEC",       CFG_FLOAT, &EXPLOSIVE_LIFE_SEC,       L"引信: 生成后几秒自己爆炸", 2 },
+    { L"EXPLODE_WARN_SEC",         CFG_FLOAT, &EXPLODE_WARN_SEC,         L"爆炸前多少秒开始闪烁(比引信长也没关系, 会自动截断)", 2 },
+    { L"EXPLODE_BLINK_PERIOD",     CFG_FLOAT, &EXPLODE_BLINK_PERIOD,     L"闪烁周期, 秒", 2 },
+    { L"EXPLODE_BLINK_MIN",        CFG_FLOAT, &EXPLODE_BLINK_MIN,        L"闪烁时最浅的 alpha, 0~1", 2 },
+    { L"EXPLOSION_RADIUS",         CFG_FLOAT, &EXPLOSION_RADIUS,         L"爆炸冲击波半径, 像素", 2 },
+    { L"EXPLOSION_POWER_MIN",      CFG_FLOAT, &EXPLOSION_POWER_MIN,      L"冲击波初速(范围边缘), 像素/秒", 2 },
+    { L"EXPLOSION_POWER_MAX",      CFG_FLOAT, &EXPLOSION_POWER_MAX,      L"冲击波初速(爆心附近), 像素/秒", 2 },
+    { L"EXPLOSION_GRAVITY",        CFG_FLOAT, &EXPLOSION_GRAVITY,        L"被炸飞之后的重力", 2 },
+    { L"FAST_HIT_SPEED",           CFG_FLOAT, &FAST_HIT_SPEED,           L"相对速度超过它算\"特别快的撞击\", 像素/秒", 2 },
+    { L"FAST_HIT_LIFE_LOSS",       CFG_FLOAT, &FAST_HIT_LIFE_LOSS,       L"高速撞击扣掉的引信时间, 秒(只对爆炸物有效)", 2 },
 };
 
 // ---- 小工具 ----
@@ -383,6 +427,11 @@ static bool WriteDefaultConfig(const std::wstring& path)
     t += L"#  删掉某一行 = 该参数用程序内置的默认值\r\n";
     t += L"#  写错的键/值会被忽略并在启动时提示, 不影响程序运行\r\n";
     t += L"#\r\n";
+    t += L"#  图片分两类, 各放一个文件夹:\r\n";
+    t += L"#     images\\blocks      方块    —— 不会自己爆炸, 只会被炸掉\r\n";
+    t += L"#     images\\explosives  爆炸物  —— 有引信, 到点自己爆炸\r\n";
+    t += L"#     images 根目录下的图片按\"爆炸物\"处理(兼容老版本)\r\n";
+    t += L"#\r\n";
     t += L"#  本文件由程序自动生成, 只在它不存在时创建, 永远不会覆盖你的修改。\r\n";
     t += L"# ============================================================\r\n";
 
@@ -390,9 +439,12 @@ static bool WriteDefaultConfig(const std::wstring& path)
     for (const auto& e : kCfgTable) {
         if (e.group != lastGroup) {
             lastGroup = e.group;
-            t += L"\r\n# ---- ";
-            t += kCfgGroups[e.group];
-            t += L" ----\r\n";
+            t += L"\r\n# ------------------------------------------------------------\r\n";
+            t += L"# --- ";
+            t += kCfgGroups[e.group].title;
+            t += L"\r\n#     ";
+            t += kCfgGroups[e.group].descr;
+            t += L"\r\n# ------------------------------------------------------------\r\n";
         }
         std::wstring line = e.key;
         line += L" = ";
@@ -439,8 +491,6 @@ static void SanitizeConfig()
         if (v > hi) v = hi;
     };
 
-    clampI(MAX_IMAGES,  1, 512);
-    clampI(SPRITE_SIZE, 8, 512);
     clampI(MAX_FALLING, 1, 2000);
     clampI(MAX_TOTAL,   8, 20000);
     clampI(DEBRIS_COLS, 1, 16);
@@ -451,13 +501,35 @@ static void SanitizeConfig()
     clampF(DROPTIME_MAX, 0.02f, 600.0f);
     if (DROPTIME_MAX < DROPTIME_MIN) std::swap(DROPTIME_MAX, DROPTIME_MIN);
 
-    clampF(FALL_SPEED_MIN, 0.0f, 20000.0f);
-    clampF(FALL_SPEED_MAX, 0.0f, 20000.0f);
-    if (FALL_SPEED_MAX < FALL_SPEED_MIN) std::swap(FALL_SPEED_MAX, FALL_SPEED_MIN);
-
     clampF(WINDOW_SCAN_SEC,  0.01f, 2.0f);
     clampF(FOLLOW_SANITY_VX, 100.0f, 10000000.0f);
     clampF(SWEEP_MIN_VX,     0.0f, 1000000.0f);
+
+    // ---- 方块 ----
+    clampI(BLOCK_MAX_IMAGES, 1, 512);
+    clampI(BLOCK_SIZE,       8, 512);
+    clampF(BLOCK_SPAWN_WEIGHT, 0.0f, 1000000.0f);
+    clampF(BLOCK_FALL_SPEED_MIN, 0.0f, 20000.0f);
+    clampF(BLOCK_FALL_SPEED_MAX, 0.0f, 20000.0f);
+    if (BLOCK_FALL_SPEED_MAX < BLOCK_FALL_SPEED_MIN)
+        std::swap(BLOCK_FALL_SPEED_MAX, BLOCK_FALL_SPEED_MIN);
+    clampF(BLOCK_STAY_SEC, 0.0f, 36000.0f);
+    clampF(BLOCK_FADE_SEC, 0.0f, 600.0f);
+    clampF(BLOCK_BLAST_RADIUS,    0.0f, 20000.0f);
+    clampF(BLOCK_BLAST_POWER_MIN, 0.0f, 20000.0f);
+    clampF(BLOCK_BLAST_POWER_MAX, 0.0f, 20000.0f);
+    if (BLOCK_BLAST_POWER_MAX < BLOCK_BLAST_POWER_MIN)
+        std::swap(BLOCK_BLAST_POWER_MAX, BLOCK_BLAST_POWER_MIN);
+    clampF(BLOCK_BLAST_GRAVITY, -20000.0f, 20000.0f);
+
+    // ---- 爆炸物 ----
+    clampI(EXPLOSIVE_MAX_IMAGES, 1, 512);
+    clampI(EXPLOSIVE_SIZE,       8, 512);
+    clampF(EXPLOSIVE_SPAWN_WEIGHT, 0.0f, 1000000.0f);
+    clampF(EXPLOSIVE_FALL_SPEED_MIN, 0.0f, 20000.0f);
+    clampF(EXPLOSIVE_FALL_SPEED_MAX, 0.0f, 20000.0f);
+    if (EXPLOSIVE_FALL_SPEED_MAX < EXPLOSIVE_FALL_SPEED_MIN)
+        std::swap(EXPLOSIVE_FALL_SPEED_MAX, EXPLOSIVE_FALL_SPEED_MIN);
 
     clampF(EXPLOSION_RADIUS,    0.0f, 20000.0f);
     clampF(EXPLOSION_POWER_MIN, 0.0f, 20000.0f);
@@ -472,9 +544,16 @@ static void SanitizeConfig()
     clampF(EXPLODE_BLINK_PERIOD, 0.02f, 600.0f);
     clampF(EXPLODE_BLINK_MIN,   0.0f, 1.0f);
 
-    clampF(SPRITE_LIFE_SEC, 0.2f, 36000.0f);
+    clampF(EXPLOSIVE_LIFE_SEC, 0.2f, 36000.0f);
     clampF(FAST_HIT_SPEED,  0.0f, 1000000.0f);
-    clampF(FAST_HIT_LIFE_LOSS, 0.0f, SPRITE_LIFE_SEC);
+    clampF(FAST_HIT_LIFE_LOSS, 0.0f, EXPLOSIVE_LIFE_SEC);
+
+    // 两个都关掉就什么都生成不出来了 —— 至少留一类
+    if (!BLOCKS_ENABLED && !EXPLOSIVES_ENABLED) BLOCKS_ENABLED = EXPLOSIVES_ENABLED = true;
+    if (BLOCK_SPAWN_WEIGHT <= 0.0f && EXPLOSIVE_SPAWN_WEIGHT <= 0.0f) {
+        BLOCK_SPAWN_WEIGHT = 1.0f;
+        EXPLOSIVE_SPAWN_WEIGHT = 1.0f;
+    }
 
     if (SPAWN_KEY_DEBOUNCE_MS > 10000) SPAWN_KEY_DEBOUNCE_MS = 10000;
     if (SPAWN_KEY_VK == 0 || SPAWN_KEY_VK > 255) SPAWN_KEY_VK = VK_OEM_PERIOD;
@@ -555,6 +634,13 @@ static void LoadConfig()
 static float RandF(float a, float b)
 {
     return std::uniform_real_distribution<float>(a, b)(g_rng);
+}
+
+// 平台粗判用的大尺寸: 方块和爆炸物哪个大用哪个。
+// (真正的"能不能接住"是 TopEdgeFits 按精灵自己的高度算的, 这里只是个粗筛)
+static int MaxSpriteSize()
+{
+    return std::max(BLOCK_SIZE, EXPLOSIVE_SIZE);
 }
 static int RandI(int a, int b)
 {
@@ -691,7 +777,7 @@ static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
     wi.prevRect  = r;
     wi.hasPrev   = false;
     // ---- 顶边能不能当平台 ----
-    // 这里只用"顶边上面放得下整张图片"(r.top >= SPRITE_SIZE)做一个粗判,
+    // 这里只用"顶边上面放得下整张图片"(r.top >= 尺寸)做一个粗判,
     // 主要给"创飞"用。落点/停靠的真正判定是 TopEdgeFits(), 它按**精灵自己的
     // 高度**算: 48px 的图片需要 top >= 48, 12px 的碎片只要 top >= 12。
     //
@@ -703,9 +789,10 @@ static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
     // 仍然排除: 全屏窗口 / 最大化窗口(顶边在 -7 左右) / 太小的窗口
     // (屏幕顶端几像素高的触控条、1x1 辅助窗口)。
     const bool maximized = (IsZoomed(hwnd) != FALSE);
-    const bool bigEnough = (r.right - r.left) >= SPRITE_SIZE &&
-                           (r.bottom - r.top)  >= SPRITE_SIZE;
-    wi.platform  = (!fullscreen && !maximized && bigEnough && r.top >= SPRITE_SIZE);
+    const int  coarse    = MaxSpriteSize();
+    const bool bigEnough = (r.right - r.left) >= coarse &&
+                           (r.bottom - r.top)  >= coarse;
+    wi.platform  = (!fullscreen && !maximized && bigEnough && r.top >= coarse);
     wi.occluders = std::move(occ);
     list->push_back(std::move(wi));
     return true;
@@ -903,6 +990,9 @@ struct Sprite
 
     bool isFalling = false;
     bool isDebris  = false;
+    // 方块: 没有引信, 不会自己爆炸, 也不会闪;
+    // 只有被爆炸波及才会炸掉(见 UpdatePhysics 里的连锁判定)。
+    bool isBlock   = false;
     bool dead = false;
 
     // 停在哪一个窗口的顶边上(没有则 nullptr)。
@@ -926,14 +1016,16 @@ static std::unique_ptr<Sprite> MakeSprite(Bitmap* src, int rx, int ry, int rw, i
 // ------------------------------------------------------------
 struct ImageAsset
 {
-    Bitmap* bmp = nullptr;    // 缩放后的 SPRITE_SIZE 位图, 所有精灵都引用它
+    Bitmap* bmp = nullptr;    // 缩放后的 size×size 位图, 所有精灵都引用它
     Bitmap* raw = nullptr;    // 原始解码结果(多帧 GIF 靠它换帧)
     UINT    frameCount = 1;
     UINT    frame      = 0;
     std::vector<UINT> delayMs;   // 每帧延时(毫秒)
     float   timer = 0.0f;        // 当前帧已显示的时间
-    float   life  = 3.0f;
-    int     dx = 0, dy = 0, dw = 0, dh = 0;   // 居中缩放后的位置(相对 32x32)
+    float   life  = 3.0f;        // 爆炸物: 引信秒数; 方块: 用 BLOCK_STAY_SEC, 这里不看
+    int     size  = 48;          // 这张图的显示边长(方块/爆炸物各自的配置)
+    bool    isBlock = false;     // true = 来自 images\blocks
+    int     dx = 0, dy = 0, dw = 0, dh = 0;   // 居中缩放后的位置(相对 size×size)
 };
 
 static std::vector<std::unique_ptr<ImageAsset>> g_assets;
@@ -1003,7 +1095,7 @@ static void ShutdownWIC()
     if (g_wicFactory) { g_wicFactory->Release(); g_wicFactory = nullptr; }
 }
 
-// 把 raw 的当前帧按居中缩放布局重绘进 32x32 的 bmp
+// 把 raw 的当前帧按居中缩放布局重绘进 a.size × a.size 的 bmp
 static void RenderAssetFrame(ImageAsset& a)
 {
     if (!a.bmp || !a.raw) return;
@@ -1024,13 +1116,13 @@ static void ComputeAssetLayout(ImageAsset& a)
 {
     const int w = (int)a.raw->GetWidth();
     const int h = (int)a.raw->GetHeight();
-    if (w <= 0 || h <= 0) { a.dx = a.dy = 0; a.dw = a.dh = SPRITE_SIZE; return; }
+    if (w <= 0 || h <= 0) { a.dx = a.dy = 0; a.dw = a.dh = a.size; return; }
 
-    const float scale = std::min((float)SPRITE_SIZE / w, (float)SPRITE_SIZE / h);
+    const float scale = std::min((float)a.size / w, (float)a.size / h);
     a.dw = std::max(1, (int)std::lround(w * scale));
     a.dh = std::max(1, (int)std::lround(h * scale));
-    a.dx = (SPRITE_SIZE - a.dw) / 2;
-    a.dy = (SPRITE_SIZE - a.dh) / 2;
+    a.dx = (a.size - a.dw) / 2;
+    a.dy = (a.size - a.dh) / 2;
 }
 
 static void ReadFrameDelays(ImageAsset& a)
@@ -1118,6 +1210,33 @@ static void FreeComposeBuffer()
 // ------------------------------------------------------------
 // 生成下落图片
 // ------------------------------------------------------------
+// 按权重随机挑一张图片: 方块用 BLOCK_SPAWN_WEIGHT, 爆炸物用 EXPLOSIVE_SPAWN_WEIGHT。
+// 权重是"每张图"的, 所以某个文件夹里图多, 那一类自然出得多。
+// 两边权重都为 0 时已经在 SanitizeConfig 里兜过底, 这里再保一次。
+static const ImageAsset* PickAsset()
+{
+    if (g_assets.empty()) return nullptr;
+
+    double wBlock = 0.0, wBoom = 0.0;
+    for (const auto& up : g_assets) {
+        if (!up->bmp) continue;
+        if (up->isBlock) wBlock += (double)BLOCK_SPAWN_WEIGHT;
+        else             wBoom  += (double)EXPLOSIVE_SPAWN_WEIGHT;
+    }
+    const double total = wBlock + wBoom;
+    if (total <= 0.0) return nullptr;
+
+    double r = std::uniform_real_distribution<double>(0.0, total)(g_rng);
+    const bool wantBlock = (r < wBlock);
+
+    // 在选中的那一类里等概率挑一张
+    std::vector<const ImageAsset*> cand;
+    for (const auto& up : g_assets)
+        if (up->bmp && up->isBlock == wantBlock) cand.push_back(up.get());
+    if (cand.empty()) return nullptr;
+    return cand[(size_t)RandI(0, (int)cand.size() - 1)];
+}
+
 // usePos=true 时以 (px,py) 为中心生成(鼠标位置), 并夹进工作区,
 // 免得生成到屏幕外面直接看不见; 否则照旧在屏幕顶端随机横坐标生成。
 static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f)
@@ -1130,33 +1249,44 @@ static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f)
         if (sp->isFalling && !sp->dead) ++falling;
     if (falling >= MAX_FALLING) return;
 
-    const int idx = RandI(0, (int)g_assets.size() - 1);
-    ImageAsset& a = *g_assets[idx];
-    if (!a.bmp) return;
+    const ImageAsset* pa = PickAsset();
+    if (!pa) return;
+    const ImageAsset& a = *pa;
 
-    auto s = MakeSprite(a.bmp, 0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    const int sz = a.size;
+    auto s = MakeSprite(a.bmp, 0, 0, sz, sz);
     if (!s) return;
 
     s->isFalling = true;
     s->isDebris  = false;
+    s->isBlock   = a.isBlock;
     if (usePos) {
-        s->x = px - SPRITE_SIZE * 0.5f;
-        s->y = py - SPRITE_SIZE * 0.5f;
-        const float maxX = (float)std::max(0, g_screenW - SPRITE_SIZE);
-        const float maxY = (float)std::max(0, g_screenH - SPRITE_SIZE);
+        s->x = px - sz * 0.5f;
+        s->y = py - sz * 0.5f;
+        const float maxX = (float)std::max(0, g_screenW - sz);
+        const float maxY = (float)std::max(0, g_screenH - sz);
         if (s->x < 0.0f)      s->x = 0.0f;    else if (s->x > maxX) s->x = maxX;
         if (s->y < 0.0f)      s->y = 0.0f;    else if (s->y > maxY) s->y = maxY;
     } else {
-        s->x = RandF(0.0f, (float)std::max(1, g_screenW - SPRITE_SIZE));
-        s->y = -(float)SPRITE_SIZE;
+        s->x = RandF(0.0f, (float)std::max(1, g_screenW - sz));
+        s->y = -(float)sz;
     }
-    s->baseFallSpeed = RandF(FALL_SPEED_MIN, FALL_SPEED_MAX);
+
+    if (a.isBlock) {
+        s->baseFallSpeed = RandF(BLOCK_FALL_SPEED_MIN, BLOCK_FALL_SPEED_MAX);
+        // 方块没有引信: life 是"停稳后还能待多久"的倒计时。
+        // BLOCK_STAY_SEC = 0 时给它一个正数, 让它永远不会走到 0。
+        s->maxLife = s->life = (BLOCK_STAY_SEC > 0.0f) ? BLOCK_STAY_SEC : 1.0f;
+        s->fadeStartLife     = (BLOCK_STAY_SEC > 0.0f) ? BLOCK_FADE_SEC : 0.0f;
+    } else {
+        s->baseFallSpeed = RandF(EXPLOSIVE_FALL_SPEED_MIN, EXPLOSIVE_FALL_SPEED_MAX);
+        s->maxLife = s->life = a.life;
+        s->fadeStartLife     = 0.0f;
+    }
     s->vy = s->baseFallSpeed;
     s->vx = 0.0f;
     s->gravity = 0.0f;
-    s->maxLife = s->life = a.life;
     s->alpha = 1.0f;
-    s->fadeStartLife = 0.0f;
     s->hitFlash = 0.0f;
 
     g_sprites.push_back(std::move(s));
@@ -1220,8 +1350,14 @@ static void SpawnDebris(Sprite* s, std::vector<std::unique_ptr<Sprite>>& out)
 // 注意: 这里刻意不碰 alpha 相关字段(fadeStartLife / hitFlash) ——
 //       被爆炸冲击波掀飞不应该让图片变浅, 这一点和窗口"创飞"不同。
 // ------------------------------------------------------------
-static void ApplyExplosionShockwave(float cx, float cy)
+// radius / powerMin / powerMax / gravity 由调用方给: 爆炸物爆炸用 EXPLOSION_*,
+// 方块被炸掉时用它自己那组 BLOCK_BLAST_*(可以更小)。
+static void ApplyExplosionShockwave(float cx, float cy,
+                                    float radius, float powerMin,
+                                    float powerMax, float grav)
 {
+    if (radius <= 0.0f) return;
+
     for (auto& sp : g_sprites) {
         Sprite* s = sp.get();
         if (s->dead || !s->src) continue;
@@ -1229,7 +1365,7 @@ static void ApplyExplosionShockwave(float cx, float cy)
         float dx = (s->x + s->w * 0.5f) - cx;
         float dy = (s->y + s->h * 0.5f) - cy;
         float d  = std::sqrt(dx * dx + dy * dy);
-        if (d > EXPLOSION_RADIUS) continue;
+        if (d > radius) continue;
 
         if (d < 1.0f) {
             // 正好压在爆心上, 给一个随机朝上的方向
@@ -1240,18 +1376,33 @@ static void ApplyExplosionShockwave(float cx, float cy)
         }
 
         // 越靠近爆心越猛
-        const float t = 1.0f - d / EXPLOSION_RADIUS;
-        const float power = EXPLOSION_POWER_MIN +
-                            (EXPLOSION_POWER_MAX - EXPLOSION_POWER_MIN) * t;
+        const float t = 1.0f - d / radius;
+        const float power = powerMin + (powerMax - powerMin) * t;
 
         s->vx = dx / d * power + RandF(-40.0f, 40.0f);
         s->vy = dy / d * power - RandF(40.0f, 140.0f);   // 整体略微上扬
-        s->gravity   = EXPLOSION_GRAVITY;
+        s->gravity   = grav;
         s->restingOn = nullptr;      // 从平台上掀下来
 
         // 下落中的图片: gravity > 0 会把它切到抛物线分支;
         // 碎片本来就吃 gravity/vx/vy, 直接生效。
     }
+}
+
+// 爆炸物爆炸时的冲击波(用 EXPLOSION_* 那一组参数)
+static void ExplosiveShockwave(float cx, float cy)
+{
+    ApplyExplosionShockwave(cx, cy, EXPLOSION_RADIUS,
+                            EXPLOSION_POWER_MIN, EXPLOSION_POWER_MAX,
+                            EXPLOSION_GRAVITY);
+}
+
+// 某个精灵的中心是否落在以 (cx,cy) 为心、radius 为半径的爆炸范围内
+static bool InsideBlast(const Sprite* s, float cx, float cy, float radius)
+{
+    const float dx = (s->x + s->w * 0.5f) - cx;
+    const float dy = (s->y + s->h * 0.5f) - cy;
+    return dx * dx + dy * dy <= radius * radius;
 }
 
 // ------------------------------------------------------------
@@ -1408,8 +1559,8 @@ static void UpdatePhysics(float dt)
                     s->gravity = 1500.0f;
                     s->restingOn = nullptr;
                     s->hitFlash  = HIT_FLASH_SEC;   // 闪一下, 不再长时间变浅
-                    // 被窗口以特别快的速度撞飞 -> 引信缩短
-                    if (fabsf(winVx) >= FAST_HIT_SPEED)
+                    // 被窗口以特别快的速度撞飞 -> 引信缩短(方块没有引信, 不受影响)
+                    if (!s->isBlock && fabsf(winVx) >= FAST_HIT_SPEED)
                         s->life -= FAST_HIT_LIFE_LOSS;
                     break;
                 }
@@ -1423,7 +1574,7 @@ static void UpdatePhysics(float dt)
 
                 const float prevBottom = s->y + s->h;
                 s->y  += s->vy * dt;
-                s->life -= dt;
+                if (!s->isBlock) s->life -= dt;   // 方块没有引信, 由"停稳计时"接管
 
                 // 屏幕边界反弹
                 if (s->x < 0) { s->x = 0; s->vx = -s->vx * 0.7f; }
@@ -1463,7 +1614,7 @@ static void UpdatePhysics(float dt)
             }
             else {
                 // ---- 匀速下落 / 停在窗口顶边 ----
-                s->life -= dt;
+                if (!s->isBlock) s->life -= dt;   // 方块没有引信
 
                 bool resting = false;
 
@@ -1608,6 +1759,21 @@ static void UpdatePhysics(float dt)
             }
         }
 
+        // ---- 方块的"停稳计时" ----
+        // 方块没有引信, 所以它的 life 不是爆炸倒计时, 而是"停稳后还能待多久"。
+        // 只有真的停住了(不受重力、竖直速度也归零了)才开始扣;
+        // 一旦被炸飞/被创飞又动起来, 计时直接重置 —— 免得它在空中就淡没了。
+        if (s->isBlock) {
+            if (BLOCK_STAY_SEC <= 0.0f) {
+                s->life = 1.0f;                       // 配置成"一直留着"
+            } else if (s->gravity == 0.0f && s->vy == 0.0f) {
+                s->life -= dt;
+                if (s->life < 0.0f) s->life = 0.0f;   // 交给后面的死亡检查收走(不爆炸)
+            } else {
+                s->life = BLOCK_STAY_SEC;             // 还在飞: 不计时
+            }
+        }
+
         // ---- 透明度 ----
         float a = 1.0f;
 
@@ -1634,8 +1800,8 @@ static void UpdatePhysics(float dt)
         }
 
         // (3) 临爆闪烁: 爆炸前 EXPLODE_WARN_SEC 秒开始, 每 EXPLODE_BLINK_PERIOD 秒一闪。
-        //     只对"会爆炸"的精灵生效(下落中的图片), 碎屑只是消失、不爆炸。
-        if (s->isFalling && !s->isDebris &&
+        //     只对"会爆炸"的精灵生效: 碎屑只是消失, 方块根本不炸, 都不闪。
+        if (s->isFalling && !s->isDebris && !s->isBlock &&
             s->life > 0.0f && s->life <= EXPLODE_WARN_SEC) {
             const float phase = fmodf(s->life, EXPLODE_BLINK_PERIOD) / EXPLODE_BLINK_PERIOD;
             if (phase < 0.5f && EXPLODE_BLINK_MIN < a) a = EXPLODE_BLINK_MIN;
@@ -1720,31 +1886,69 @@ static void UpdatePhysics(float dt)
             a->hitFlash = HIT_FLASH_SEC;
             b->hitFlash = HIT_FLASH_SEC;
 
-            // 特别快的互撞 -> 双方引信都缩短
+            // 特别快的互撞 -> 双方引信都缩短(方块没有引信, 不参与)
             if (impact >= FAST_HIT_SPEED) {
-                a->life -= FAST_HIT_LIFE_LOSS;
-                b->life -= FAST_HIT_LIFE_LOSS;
+                if (!a->isBlock) a->life -= FAST_HIT_LIFE_LOSS;
+                if (!b->isBlock) b->life -= FAST_HIT_LIFE_LOSS;
             }
         }
     }
 
     // ---- 检查死亡 / 爆炸 ----
+    // 三类走不同的路:
+    //   · 爆炸物(引信到点)  -> 炸: 放冲击波 + 炸成碎片
+    //   · 方块(停稳超时)    -> 只是消失, 不炸(它的 life 是"停留倒计时")
+    //   · 碎片              -> 只是消失
     std::vector<Sprite*> toExplode;
     for (auto& sp : g_sprites) {
         if (sp->dead) continue;
         if (sp->life > 0.0f) continue;
 
-        if (sp->isFalling && !sp->isDebris) {
-            sp->dead = true;
-            toExplode.push_back(sp.get());
-        } else {
-            sp->dead = true;
+        if (sp->isBlock || sp->isDebris || !sp->isFalling) {
+            sp->dead = true;               // 方块自然消失: 不放冲击波, 也不出碎片
+            continue;
+        }
+        sp->dead = true;
+        toExplode.push_back(sp.get());
+    }
+
+    // ---- 连锁: 落在爆炸范围内的方块会被炸掉 ----
+    // 用"待处理清单"从头往后扫, 新炸掉的方块会追加到末尾, 于是它自己那一次爆炸
+    // 也会被处理到 —— 这就是连锁。BLOCK_CHAIN_EXPLOSION = false 时, 方块被炸掉
+    // 但不再放出冲击波, 连锁到此为止(仍然会变成碎片)。
+    if (BLOCK_DESTROY_IN_BLAST) {
+        for (size_t head = 0; head < toExplode.size(); ++head) {
+            const Sprite* src = toExplode[head];
+            // 碎屑不放冲击波; 方块只有在允许连锁时才放
+            if (src->isDebris) continue;
+            if (src->isBlock && !BLOCK_CHAIN_EXPLOSION) continue;
+
+            const float cx = src->x + src->w * 0.5f;
+            const float cy = src->y + src->h * 0.5f;
+            const float radius = src->isBlock ? BLOCK_BLAST_RADIUS : EXPLOSION_RADIUS;
+            if (radius <= 0.0f) continue;
+
+            for (auto& sp : g_sprites) {
+                if (sp->dead || !sp->isBlock) continue;
+                if (!InsideBlast(sp.get(), cx, cy, radius)) continue;
+                sp->dead = true;
+                toExplode.push_back(sp.get());
+            }
         }
     }
 
-    // ---- 爆炸冲击波: 把范围内的其它精灵炸飞(不变浅), 再生成自己的碎片 ----
-    for (Sprite* s : toExplode)
-        ApplyExplosionShockwave(s->x + s->w * 0.5f, s->y + s->h * 0.5f);
+    // ---- 冲击波: 把范围内的其它精灵炸飞(不变浅) ----
+    // 爆炸物用它自己那组 EXPLOSION_*; 方块用它那组 BLOCK_BLAST_*。
+    for (Sprite* s : toExplode) {
+        const float cx = s->x + s->w * 0.5f;
+        const float cy = s->y + s->h * 0.5f;
+        if (s->isBlock)
+            ApplyExplosionShockwave(cx, cy, BLOCK_BLAST_RADIUS,
+                                    BLOCK_BLAST_POWER_MIN, BLOCK_BLAST_POWER_MAX,
+                                    BLOCK_BLAST_GRAVITY);
+        else
+            ExplosiveShockwave(cx, cy);
+    }
 
     std::vector<std::unique_ptr<Sprite>> pending;
     for (Sprite* s : toExplode)
@@ -1821,38 +2025,45 @@ static void PresentAll()
 // ------------------------------------------------------------
 // 加载图片
 // ------------------------------------------------------------
-static void LoadImages()
+// 三个来源:
+//   images\blocks      方块    (BLOCK_MAX_IMAGES, BLOCK_SIZE, 不爆炸)
+//   images\explosives  爆炸物  (EXPLOSIVE_MAX_IMAGES, EXPLOSIVE_SIZE, 有引信)
+//   images 根目录      按爆炸物处理 —— 老版本的图片都放在这里, 不动它们
+// 目录不存在就跳过, 不报错。文件名排序后取前 N 张。
+static bool SupportedImageExt(const std::wstring& name)
 {
-    const std::wstring imgDir = ExeDir() + L"\\images";
+    std::wstring lower = name;
+    for (auto& ch : lower) ch = (wchar_t)towlower(ch);
+    const size_t dot = lower.find_last_of(L'.');
+    const std::wstring ext = (dot == std::wstring::npos) ? L"" : lower.substr(dot);
+    return ext == L".png"  || ext == L".jpg"  || ext == L".jpeg" ||
+           ext == L".bmp"  || ext == L".gif"  || ext == L".webp" ||
+           ext == L".tif"  || ext == L".tiff" || ext == L".ico"  ||
+           ext == L".jfif" || ext == L".jxl";
+}
+
+// 只扫一层(不递归), 免得 images\blocks\素材\... 这种子目录被吸进来
+static void ListImageFiles(const std::wstring& dir, std::vector<std::wstring>& out)
+{
+    WIN32_FIND_DATAW fd = {};
+    HANDLE hFind = FindFirstFileW((dir + L"\\*.*").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (!SupportedImageExt(fd.cFileName)) continue;
+        out.push_back(dir + L"\\" + fd.cFileName);
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+}
+
+static void LoadImageFolder(const std::wstring& dir, bool isBlock, int maxCount, int size)
+{
+    if (maxCount <= 0) return;
 
     std::vector<std::wstring> files;
-    WIN32_FIND_DATAW fd = {};
-    std::wstring pattern = imgDir + L"\\*.*";
-    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
-    if (hFind != INVALID_HANDLE_VALUE) {
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-
-            std::wstring name = fd.cFileName;
-            std::wstring lower = name;
-            for (auto& ch : lower) ch = (wchar_t)towlower(ch);
-
-            size_t dot = lower.find_last_of(L'.');
-            std::wstring ext = (dot == std::wstring::npos) ? L"" : lower.substr(dot);
-
-            if (ext == L".png"  || ext == L".jpg"  || ext == L".jpeg" ||
-                ext == L".bmp"  || ext == L".gif"  || ext == L".webp" ||
-                ext == L".tif"  || ext == L".tiff" || ext == L".ico"  ||
-                ext == L".jfif" || ext == L".jxl")
-            {
-                files.push_back(imgDir + L"\\" + name);
-            }
-        } while (FindNextFileW(hFind, &fd));
-        FindClose(hFind);
-    }
-
+    ListImageFiles(dir, files);
     std::sort(files.begin(), files.end());
-    if ((int)files.size() > MAX_IMAGES) files.resize(MAX_IMAGES);
+    if ((int)files.size() > maxCount) files.resize(maxCount);
 
     for (auto& path : files) {
         auto asset = std::make_unique<ImageAsset>();
@@ -1881,12 +2092,14 @@ static void LoadImages()
         asset->frameCount = raw->GetFrameCount(&FrameDimensionTime);
         if (asset->frameCount == 0) asset->frameCount = 1;
         asset->frame = 0;
-        asset->life  = SPRITE_LIFE_SEC;   // 所有图片统一 5 秒
+        asset->life  = isBlock ? BLOCK_STAY_SEC : EXPLOSIVE_LIFE_SEC;
+        asset->size  = size;
+        asset->isBlock = isBlock;
 
         ReadFrameDelays(*asset);
         ComputeAssetLayout(*asset);
 
-        asset->bmp = new Bitmap(SPRITE_SIZE, SPRITE_SIZE, PixelFormat32bppPARGB);
+        asset->bmp = new Bitmap(size, size, PixelFormat32bppPARGB);
         if (asset->bmp->GetLastStatus() != Ok) {
             delete asset->bmp;
             asset->bmp = nullptr;
@@ -1898,6 +2111,24 @@ static void LoadImages()
 
         g_assets.push_back(std::move(asset));
     }
+}
+
+static void LoadImages()
+{
+    const std::wstring imgDir = ExeDir() + L"\\images";
+
+    // 爆炸物: 先读 images\explosives, 再读 images 根目录(老版本图片留在那里)
+    if (EXPLOSIVES_ENABLED) {
+        LoadImageFolder(imgDir + L"\\explosives", false,
+                        EXPLOSIVE_MAX_IMAGES, EXPLOSIVE_SIZE);
+        const int left = EXPLOSIVE_MAX_IMAGES - (int)g_assets.size();
+        if (left > 0)
+            LoadImageFolder(imgDir, false, left, EXPLOSIVE_SIZE);
+    }
+
+    // 方块
+    if (BLOCKS_ENABLED)
+        LoadImageFolder(imgDir + L"\\blocks", true, BLOCK_MAX_IMAGES, BLOCK_SIZE);
 }
 
 // ------------------------------------------------------------
@@ -2092,10 +2323,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     if (g_assets.empty()) {
         std::wstring msg =
             L"没有找到可用图片！\n\n"
-            L"请在 exe 同目录下建一个 images 文件夹，\n"
-            L"放入 1~" + std::to_wstring(MAX_IMAGES) +
-            L" 张 png / jpg / bmp / gif / webp 图片。\n\n"
-            L"每张图片存活 " + std::to_wstring((int)SPRITE_LIFE_SEC) +
+            L"请在 exe 同目录下建 images 文件夹，里面放两个子文件夹：\n"
+            L"    images\\blocks      方块   （不会自己爆炸）\n"
+            L"    images\\explosives  爆炸物 （有引信，到点爆炸）\n\n"
+            L"各放 1~" + std::to_wstring(BLOCK_MAX_IMAGES) + L" / " +
+            std::to_wstring(EXPLOSIVE_MAX_IMAGES) +
+            L" 张 png / jpg / bmp / gif / webp 图片，\n"
+            L"放在 images 根目录里的图片按爆炸物处理。\n\n"
+            L"爆炸物存活 " + std::to_wstring((int)EXPLOSIVE_LIFE_SEC) +
             L" 秒后爆炸；\n被以特别快的速度撞击会提前 " +
             std::to_wstring((int)FAST_HIT_LIFE_LOSS) + L" 秒爆炸。";
         if (!g_failedFiles.empty()) {

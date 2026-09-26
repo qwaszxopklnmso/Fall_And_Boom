@@ -29,5 +29,7 @@ AGENTS.md
 # ---- 从网页另存下来的参考资料（只是找素材用的，程序不读） ----
 images/*.html
 images/*_files/
-_cfgtest/
-_genscratch/
+
+# ---- 临时脚手架 / 测试目录 ----
+_*/
+_test.exe

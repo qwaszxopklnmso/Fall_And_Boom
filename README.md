@@ -4,6 +4,13 @@ Windows 桌面小玩具：图片从屏幕顶端掉落，落到窗口顶边会停
 被快速拖动的窗口"创飞"，存活 5 秒后炸成碎片，爆炸还会把附近的图片一起炸飞。
 被以特别快的速度撞击时，引信会缩短 2.5 秒。
 
+图片分**两类**，各放一个文件夹：
+
+| 文件夹 | 类别 | 行为 |
+|---|---|---|
+| `images\blocks` | **方块** | **不会自己爆炸**，也不闪；停稳一会儿淡淡消失。只有当爆炸物炸到它时才被炸成碎片 |
+| `images\explosives` | **爆炸物** | 现有逻辑：掉下来 → 停住/被创飞 → 引信到点自己爆炸 → 冲击波炸飞周围 |
+
 > 本项目**由 AI 生成**，以 **MIT** 协议发布，署名 **qwaszxopklnm**。
 > 详见文末的「AI 生成声明」与 [LICENSE](LICENSE)。
 
@@ -13,6 +20,7 @@ Windows 桌面小玩具：图片从屏幕顶端掉落，落到窗口顶边会停
 - 图片格式：`png` / `jpg` / `jpeg` / `bmp` / `gif` / `webp` / `tif` / `ico`
   - 优先用 GDI+ 解码；遇到 WebP、JPEG XL 等它不认识的格式自动回退到 WIC
   - 支持多帧 GIF 动画
+- **方块 / 爆炸物两类图片**，各自有独立的尺寸、下落速度、生成权重、数量上限（见下方「方块与爆炸物」）
 - 把其它程序的窗口顶边当作平台；**全屏 / 无边框全屏窗口会被忽略**
 - **被其它窗口遮住的那段顶边不会被当成平台**，不会出现"悬空停住"
 - 停住的图片会跟随窗口做**水平和垂直**移动（窗口往上拖也会被顶上去），
@@ -196,18 +204,52 @@ cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
 > `C2001: 字符串字面量中的换行符`。
 > `user32/gdi32/gdiplus/windowscodecs` 也必须显式写出，裸 `cl` 不会自动链接。
 
-## 图片
+## 方块与爆炸物
 
-把图片放进 exe 同目录的 `images\` 文件夹（按文件名排序，最多取前 `MAX_IMAGES` 个，默认 15）。
+图片放在 exe 同目录的 `images\` 下面，**分两个子文件夹**（只扫一层，不递归）：
 
-每张图片统一存活 **5 秒**，然后爆炸成 4×4 的碎片。
-被以特别快的速度撞击（相对速度 ≥ 1650 像素/秒）会**提前 2.5 秒**爆炸。
+```
+images\
+    blocks\        方块    —— 不会自己爆炸
+    explosives\    爆炸物  —— 有引信，到点自己爆炸
+```
 
-爆炸前 3 秒开始闪烁。所以满血时只在生命最后 3 秒闪；
-而挨过一次重击后剩余寿命变成 2.5 秒，会立刻开始闪。
+`images\` 根目录里直接放的图片按**爆炸物**处理，兼容老版本。
 
-> 上面这些数字都能在 `config.ini` 里改（`SPRITE_LIFE_SEC` / `FAST_HIT_SPEED` /
-> `FAST_HIT_LIFE_LOSS` / `EXPLODE_WARN_SEC` / `DEBRIS_COLS` / `DEBRIS_ROWS`）。
+两类的差别只有一条：**有没有引信**。
+
+| | 方块 `blocks` | 爆炸物 `explosives` |
+|---|---|---|
+| 引信 / 自己爆炸 | ✗ 永远不炸 | ✓ `EXPLOSIVE_LIFE_SEC`（默认 5）秒后炸 |
+| 临爆闪烁 | ✗ 不闪 | ✓ 最后 `EXPLODE_WARN_SEC` 秒开始闪 |
+| 高速撞击扣引信 | ✗ | ✓ 相对速度 ≥ `FAST_HIT_SPEED` 时扣 `FAST_HIT_LIFE_LOSS` |
+| 被爆炸波及时 | **炸成碎片**（`BLOCK_DESTROY_IN_BLAST`） | 被炸飞，引信不变 |
+| 被炸掉之后 | 自己再放一次冲击波 → **连锁**（`BLOCK_CHAIN_EXPLOSION`） | 到点才炸 |
+| 停稳之后 | `BLOCK_STAY_SEC`（默认 12）秒后**淡出消失**，不爆炸 | 到点爆炸 |
+| 下落 / 尺寸 / 生成权重 | `BLOCK_*` 各自一套 | `EXPLOSIVE_*` 各自一套 |
+
+### 方块为什么要"淡出消失"
+
+方块没有引信，如果它落在屏幕上就永远不走，屏幕几十秒就会堆满，
+而且 `MAX_FALLING` 上限会被这些"停着不动"的方块占满，**新图片再也生成不出来**。
+所以方块停稳（不受重力、竖直速度归零）之后开始倒计时：
+`BLOCK_STAY_SEC` 秒到点就淡出消失，**不是爆炸**，也不产生碎片。
+一旦它被炸飞/被创飞又动起来，计时立即重置，不会在空中就淡没了。
+
+`BLOCK_STAY_SEC = 0` 表示一直留着（那就要自己盯着 `MAX_FALLING` / `MAX_TOTAL`）。
+
+### 爆炸是怎么传播的
+
+1. 爆炸物引信到点 → 爆炸：放一次冲击波（`EXPLOSION_RADIUS` / `EXPLOSION_POWER_*`），
+   自己炸成 `DEBRIS_COLS × DEBRIS_ROWS` 的碎片。
+2. 同一次解算里，**中心落在爆炸范围内的方块**（按方块自己的中心点到爆心的距离算）
+   全部被标记为炸掉，冒出方块碎片；`BLOCK_DESTROY_IN_BLAST = false` 时跳过这一步，
+   方块只是被冲击波掀飞。
+3. `BLOCK_CHAIN_EXPLOSION = true` 时，被炸掉的方块**自己再放一次冲击波**
+   （用 `BLOCK_BLAST_*` 那一组，默认半径 150、威力更小），于是它范围内的方块继续被炸掉
+   —— 这就是连锁。链式展开写成一个待处理清单，每个方块只会被炸一次，不会死循环。
+   `false` 时方块照样炸成碎片，但不再向外传播。
+4. 方块爆炸**不会**缩短别的爆炸物的引信，爆炸物只有"自己到点"和"被高速撞击"两条路。
 
 > WebP 依赖系统安装的解码器（Win10/11 通常自带）。
 > 若某张图片解不了，程序不会崩溃，只会在全部图片都失败时弹窗列出文件名。
@@ -217,22 +259,36 @@ cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
 **所有可调参数都在 exe 同目录的 `config.ini` 里，改完重启程序生效，不用重新编译。**
 
 文件不存在时程序会按内置默认值自动生成一份，里面每个参数都带中文说明；
-**已有的文件永远不会被覆盖**（只会被读取）。
+**已有的文件永远不会被覆盖**（只会被读取）。文件按三段用 `# ---` 注释分开：
 
 ```ini
-# ---- 图片与生成节奏 ----
-MAX_IMAGES = 15                   # 最多加载几张图片(images 里按文件名排序取前 N 张)
-DROPTIME_MIN = 0.2                # 两次自动生成的最小间隔, 秒(自然掉落快慢主要看这两个)
-DROPTIME_MAX = 1.3                # 两次自动生成的最大间隔, 秒
-FALL_SPEED_MIN = 450              # 自然下落速度下限, 像素/秒
+# ------------------------------------------------------------
+# --- 通用 common
+#     两边都适用的东西: 生成节奏、窗口扫描、碰撞反馈、按键
+# ------------------------------------------------------------
+DROPTIME_MIN = 0.2                # 两次自动生成的最小间隔, 秒(掉落快慢主要看这两个)
 SPAWN_KEY = "."                   # 手动生成按键
-SPRITE_LIFE_SEC = 5               # 每张图片存活几秒后爆炸
+
+# ------------------------------------------------------------
+# --- 方块 blocks  (images\blocks)
+#     不会自己爆炸, 也不会闪; 只有被爆炸波及时才会炸成碎片
+# ------------------------------------------------------------
+BLOCK_SIZE = 48                   # 方块显示边长, 像素(会自动缩放)
+BLOCK_SPAWN_WEIGHT = 1            # 每张方块图的生成权重, 0 = 不出方块
+BLOCK_DESTROY_IN_BLAST = true     # 爆炸范围内的方块会被炸掉 true / false
+
+# ------------------------------------------------------------
+# --- 爆炸物 explosives  (images\explosives)
+#     有引信, 时间到了自己爆炸, 并把范围内的一切炸飞
+# ------------------------------------------------------------
+EXPLOSIVE_LIFE_SEC = 5            # 引信: 生成后几秒自己爆炸
+EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 ```
 
 写法规则（都是为了让"写错一个字"不至于让程序罢工）：
 
 - 只认 `键 = 值` 这一行；键名**忽略大小写、下划线、横线和空格**
-  （`MAX_IMAGES` / `max-images` / `max images` 等价）
+  （`BLOCK_SIZE` / `block-size` / `block size` 等价）
 - `#` 或 `;` 开头的整行是注释；行中间只有**前面是空白**才算注释
   （所以 `SPAWN_KEY = ";"` 这种值不会被误伤）
 - `[小节标题]` 会被跳过，习惯怎么写都行
@@ -248,34 +304,77 @@ SPRITE_LIFE_SEC = 5               # 每张图片存活几秒后爆炸
 
 ### 参数一览
 
+**通用**
+
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `MAX_IMAGES` | 15 | 最多加载几张图片 |
-| `SPRITE_SIZE` | 48 | 图片缩放到的边长（像素）；也是顶边能不能落脚的高度门槛 |
 | `SPAWN_FIRST_DELAY` | 0.8 | 启动后第一张图片出现前的等待（秒） |
 | `DROPTIME_MIN` / `DROPTIME_MAX` | 0.2 / 1.3 | 两次自动生成的间隔范围（秒） |
-| `FALL_SPEED_MIN` / `_MAX` | 450 / 700 | 下落速度范围（像素/秒） |
 | `WINDOW_SCAN_SEC` | 0.09 | 窗口位置采样间隔（秒） |
 | `SWEEP_MIN_VX` | 260 | 窗口横向速度超过它就把图片"创飞"（像素/秒） |
 | `FOLLOW_SANITY_VX` | 20000 | 跟随窗口时的荒谬速度上限 |
-| `MAX_FALLING` / `MAX_TOTAL` | 20 / 220 | 同屏下落中 / 精灵总数上限 |
+| `MAX_FALLING` / `MAX_TOTAL` | 20 / 220 | 同屏下落中（两类合计）/ 精灵总数上限 |
 | `DEBRIS_COLS` / `DEBRIS_ROWS` | 4 / 4 | 爆炸碎片行列数 |
+| `HIT_FLASH_SEC` / `HIT_DIM` | 0.40 / 0.50 | 被撞后闪光的时长 / 最浅 alpha |
 | `AUTO_SPAWN_ENABLED` | `true` | 自动随机下落生成（关掉就只剩手动） |
 | `MANUAL_SPAWN_ENABLED` | `true` | 按 `.` 手动生成（关掉就只剩自动） |
 | `SPAWN_KEY` | `"."` | 手动生成的按键 |
 | `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动生成的去抖间隔（毫秒） |
+
+**方块 `blocks`**
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `BLOCKS_ENABLED` | `true` | 关掉就完全不生成方块（`blocks` 文件夹也不读） |
+| `BLOCK_MAX_IMAGES` | 8 | `blocks` 最多读几张（按文件名排序） |
+| `BLOCK_SIZE` | 48 | 方块缩放到的边长（像素）；也是它能不能站上窗口顶边的高度门槛 |
+| `BLOCK_SPAWN_WEIGHT` | 1.0 | 每张方块图的生成权重，0 = 不出方块 |
+| `BLOCK_FALL_SPEED_MIN` / `_MAX` | 450 / 700 | 方块下落速度范围（像素/秒） |
+| `BLOCK_STAY_SEC` | 12.0 | 停稳后停留几秒淡出消失（0 = 一直留着） |
+| `BLOCK_FADE_SEC` | 1.5 | 消失前的淡出时长（秒，0 = 直接不见） |
+| `BLOCK_DESTROY_IN_BLAST` | `true` | 爆炸范围内的方块会被炸掉 |
+| `BLOCK_CHAIN_EXPLOSION` | `true` | 被炸掉的方块自己也放冲击波（连锁） |
+| `BLOCK_BLAST_RADIUS` | 150 | 方块爆炸时自己的冲击波半径（像素） |
+| `BLOCK_BLAST_POWER_MIN` / `_MAX` | 350 / 650 | 方块冲击波初速（像素/秒） |
+| `BLOCK_BLAST_GRAVITY` | 1350 | 被方块炸飞之后的重力 |
+
+**爆炸物 `explosives`**
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `EXPLOSIVES_ENABLED` | `true` | 关掉就只剩方块 |
+| `EXPLOSIVE_MAX_IMAGES` | 15 | `explosives` 最多读几张（按文件名排序） |
+| `EXPLOSIVE_SIZE` | 48 | 爆炸物缩放到的边长（像素） |
+| `EXPLOSIVE_SPAWN_WEIGHT` | 1.0 | 每张爆炸物图的生成权重（和方块权重比大小） |
+| `EXPLOSIVE_FALL_SPEED_MIN` / `_MAX` | 450 / 700 | 爆炸物下落速度范围（像素/秒） |
+| `EXPLOSIVE_LIFE_SEC` | 5.0 | 引信：生成后几秒自己爆炸 |
+| `EXPLODE_WARN_SEC` | 3.0 | 爆炸前多少秒开始闪烁 |
+| `EXPLODE_BLINK_PERIOD` / `_MIN` | 0.6 / 0.45 | 闪烁周期（秒）/ 最浅 alpha |
 | `EXPLOSION_RADIUS` | 310 | 爆炸冲击波半径（像素） |
 | `EXPLOSION_POWER_MIN` / `_MAX` | 500 / 900 | 冲击波初速（像素/秒） |
 | `EXPLOSION_GRAVITY` | 1350 | 被炸飞之后的重力 |
-| `SPRITE_LIFE_SEC` | 5.0 | 统一爆炸时间（秒） |
 | `FAST_HIT_SPEED` | 1650 | 判定"特别快的撞击"的相对速度阈值（像素/秒） |
-| `FAST_HIT_LIFE_LOSS` | 2.5 | 高速撞击扣掉的寿命（秒） |
-| `EXPLODE_WARN_SEC` | 3.0 | 爆炸前多少秒开始闪烁 |
-| `EXPLODE_BLINK_PERIOD` / `_MIN` | 0.6 / 0.45 | 闪烁周期（秒）/ 最浅 alpha |
-| `HIT_FLASH_SEC` / `HIT_DIM` | 0.40 / 0.50 | 被撞后闪光的时长 / 最浅 alpha |
+| `FAST_HIT_LIFE_LOSS` | 2.5 | 高速撞击扣掉的引信时间（秒） |
+
+生成哪一类是**按权重随机**的：每一张方块图按 `BLOCK_SPAWN_WEIGHT` 计一份，
+每一张爆炸物图按 `EXPLOSIVE_SPAWN_WEIGHT` 计一份。所以 `blocks` 里放 2 张、
+`explosives` 里放 6 张、权重都是 1 时，出爆炸物的概率是方块的 3 倍；
+想让方块更多就把 `BLOCK_SPAWN_WEIGHT` 调大（比如 3）。
 
 `FAST_HIT_SPEED` 默认 1650 高于自由落体上限 700，所以普通下落互撞永远不会触发，
 只有被撞飞 / 炸飞之后才够得着。
+
+<details>
+<summary>旧版本用过的键名（已改名，写旧名会被提示"不认识的键"）</summary>
+
+| 旧键名 | 现在叫什么 |
+|---|---|
+| `MAX_IMAGES` | `BLOCK_MAX_IMAGES` + `EXPLOSIVE_MAX_IMAGES`（分成两个） |
+| `SPRITE_SIZE` | `BLOCK_SIZE` + `EXPLOSIVE_SIZE` |
+| `FALL_SPEED_MIN` / `_MAX` | `BLOCK_FALL_SPEED_*` + `EXPLOSIVE_FALL_SPEED_*` |
+| `SPRITE_LIFE_SEC` | `EXPLOSIVE_LIFE_SEC` |
+
+</details>
 
 ## 手动生成（按 `.`）
 
