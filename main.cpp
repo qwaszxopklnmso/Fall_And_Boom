@@ -89,7 +89,8 @@ static float HIT_DIM       = 0.50f;   // 闪到最浅时的 alpha
 
 // ---- 方块 blocks (images\blocks) ----
 // 方块**没有引信**: 不会自己爆炸, 也不会闪。
-// 它只会被爆炸波及 —— 爆炸范围内的方块会被炸成碎片(见 BLOCK_DESTROY_IN_BLAST)。
+// 它只会被爆炸波及 —— 爆炸范围内的方块会被炸成碎片(见 BLOCK_DESTROY_IN_BLAST),
+// 但被炸掉的方块自己**不会再炸**: 就这么一层, 不连锁。
 // 停稳之后 BLOCK_STAY_SEC 秒消失(淡出, 不是爆炸), 免得屏幕越堆越满。
 static bool  BLOCKS_ENABLED         = true;   // ★ 关掉就完全不生成方块
 static int   BLOCK_MAX_IMAGES       = 8;      // ★ blocks 文件夹最多读几张
@@ -100,11 +101,6 @@ static float BLOCK_FALL_SPEED_MAX   = 700.0f; // 方块下落速度上限(像素
 static float BLOCK_STAY_SEC         = 12.0f;  // 停稳后停留几秒消失(0 = 一直留着)
 static float BLOCK_FADE_SEC         = 1.5f;   // 消失前的淡出时长(秒)
 static bool  BLOCK_DESTROY_IN_BLAST = true;   // ★ 爆炸范围内的方块会被炸掉
-static bool  BLOCK_CHAIN_EXPLOSION  = true;   // ★ 被炸掉的方块自己也放冲击波(连锁)
-static float BLOCK_BLAST_RADIUS     = 150.0f; // 方块被炸时自己的冲击波半径
-static float BLOCK_BLAST_POWER_MIN  = 350.0f; // 方块的冲击波初速(范围边缘)
-static float BLOCK_BLAST_POWER_MAX  = 650.0f; // 方块的冲击波初速(爆心附近)
-static float BLOCK_BLAST_GRAVITY    = 1350.0f;// 被方块的爆炸炸飞之后的重力
 
 // ---- 爆炸物 explosives (images\explosives) ----
 static bool  EXPLOSIVES_ENABLED       = true; // ★ 关掉就只剩方块
@@ -222,11 +218,6 @@ static const CfgEntry kCfgTable[] = {
     { L"BLOCK_STAY_SEC",         CFG_FLOAT, &BLOCK_STAY_SEC,         L"方块停稳后停留几秒消失(淡出, 不爆炸); 0 = 一直留着", 1 },
     { L"BLOCK_FADE_SEC",         CFG_FLOAT, &BLOCK_FADE_SEC,         L"方块消失前的淡出时长, 秒(0 = 直接不见)", 1 },
     { L"BLOCK_DESTROY_IN_BLAST", CFG_BOOL,  &BLOCK_DESTROY_IN_BLAST, L"爆炸范围内的方块会被炸掉 true / false", 1 },
-    { L"BLOCK_CHAIN_EXPLOSION",  CFG_BOOL,  &BLOCK_CHAIN_EXPLOSION,  L"被炸掉的方块自己也放冲击波(于是会连锁) true / false", 1 },
-    { L"BLOCK_BLAST_RADIUS",     CFG_FLOAT, &BLOCK_BLAST_RADIUS,     L"方块爆炸时自己的冲击波半径, 像素", 1 },
-    { L"BLOCK_BLAST_POWER_MIN",  CFG_FLOAT, &BLOCK_BLAST_POWER_MIN,  L"方块冲击波初速(范围边缘), 像素/秒", 1 },
-    { L"BLOCK_BLAST_POWER_MAX",  CFG_FLOAT, &BLOCK_BLAST_POWER_MAX,  L"方块冲击波初速(爆心附近), 像素/秒", 1 },
-    { L"BLOCK_BLAST_GRAVITY",    CFG_FLOAT, &BLOCK_BLAST_GRAVITY,    L"被方块炸飞之后的重力", 1 },
 
     // ---------------- 爆炸物 explosives ----------------
     { L"EXPLOSIVES_ENABLED",       CFG_BOOL,  &EXPLOSIVES_ENABLED,       L"false = 完全不生成爆炸物(explosives 文件夹也不会读)", 2 },
@@ -521,12 +512,6 @@ static void SanitizeConfig()
         std::swap(BLOCK_FALL_SPEED_MAX, BLOCK_FALL_SPEED_MIN);
     clampF(BLOCK_STAY_SEC, 0.0f, 36000.0f);
     clampF(BLOCK_FADE_SEC, 0.0f, 600.0f);
-    clampF(BLOCK_BLAST_RADIUS,    0.0f, 20000.0f);
-    clampF(BLOCK_BLAST_POWER_MIN, 0.0f, 20000.0f);
-    clampF(BLOCK_BLAST_POWER_MAX, 0.0f, 20000.0f);
-    if (BLOCK_BLAST_POWER_MAX < BLOCK_BLAST_POWER_MIN)
-        std::swap(BLOCK_BLAST_POWER_MAX, BLOCK_BLAST_POWER_MIN);
-    clampF(BLOCK_BLAST_GRAVITY, -20000.0f, 20000.0f);
 
     // ---- 爆炸物 ----
     clampI(EXPLOSIVE_MAX_IMAGES, 1, 512);
@@ -1375,8 +1360,7 @@ static void SpawnDebris(Sprite* s, std::vector<std::unique_ptr<Sprite>>& out)
 // 注意: 这里刻意不碰 alpha 相关字段(fadeStartLife / hitFlash) ——
 //       被爆炸冲击波掀飞不应该让图片变浅, 这一点和窗口"创飞"不同。
 // ------------------------------------------------------------
-// radius / powerMin / powerMax / gravity 由调用方给: 爆炸物爆炸用 EXPLOSION_*,
-// 方块被炸掉时用它自己那组 BLOCK_BLAST_*(可以更小)。
+// radius / powerMin / powerMax / gravity 由调用方给(现在只有爆炸物会调用它)。
 static void ApplyExplosionShockwave(float cx, float cy,
                                     float radius, float powerMin,
                                     float powerMax, float grav)
@@ -1937,42 +1921,34 @@ static void UpdatePhysics(float dt)
         toExplode.push_back(sp.get());
     }
 
-    // ---- 连锁: 落在爆炸范围内的方块会被炸掉 ----
-    // 用"待处理清单"从头往后扫, 新炸掉的方块会追加到末尾, 于是它自己那一次爆炸
-    // 也会被处理到 —— 这就是连锁。BLOCK_CHAIN_EXPLOSION = false 时, 方块被炸掉
-    // 但不再放出冲击波, 连锁到此为止(仍然会变成碎片)。
-    if (BLOCK_DESTROY_IN_BLAST) {
-        for (size_t head = 0; head < toExplode.size(); ++head) {
-            const Sprite* src = toExplode[head];
-            // 碎屑不放冲击波; 方块只有在允许连锁时才放
-            if (src->isDebris) continue;
-            if (src->isBlock && !BLOCK_CHAIN_EXPLOSION) continue;
+    // ---- 爆炸范围内的方块会被炸掉 ----
+    // 只有"爆炸物爆炸"会触发, 而且**不传播**: 被炸掉的方块只是碎掉,
+    // 不会再放冲击波去炸旁边的方块。(早先那版会连锁, 一颗就能清屏。)
+    // 爆心先收集好, 再统一扫方块 —— 这样本帧刚被炸掉的方块不会被当成新的爆心。
+    if (BLOCK_DESTROY_IN_BLAST && EXPLOSION_RADIUS > 0.0f) {
+        std::vector<const Sprite*> blasts;
+        for (Sprite* s : toExplode)
+            if (!s->isBlock) blasts.push_back(s);
 
+        for (const Sprite* src : blasts) {
             const float cx = src->x + src->w * 0.5f;
             const float cy = src->y + src->h * 0.5f;
-            const float radius = src->isBlock ? BLOCK_BLAST_RADIUS : EXPLOSION_RADIUS;
-            if (radius <= 0.0f) continue;
-
             for (auto& sp : g_sprites) {
                 if (sp->dead || !sp->isBlock) continue;
-                if (!InsideBlast(sp.get(), cx, cy, radius)) continue;
+                if (!InsideBlast(sp.get(), cx, cy, EXPLOSION_RADIUS)) continue;
                 sp->dead = true;
                 toExplode.push_back(sp.get());
             }
         }
     }
 
-    // ---- 冲击波: 把范围内的其它精灵炸飞(不变浅) ----
-    // 爆炸物用它自己那组 EXPLOSION_*; 方块用它那组 BLOCK_BLAST_*。
+    // ---- 冲击波: 只有爆炸物会放 ----
+    // 方块被炸掉时没有冲击波, 只有它自己那一堆碎片。
+    // ---- 冲击波: 只有爆炸物会放 ----
+    // 方块被炸掉时没有冲击波, 只有它自己那一堆碎片。
     for (Sprite* s : toExplode) {
-        const float cx = s->x + s->w * 0.5f;
-        const float cy = s->y + s->h * 0.5f;
-        if (s->isBlock)
-            ApplyExplosionShockwave(cx, cy, BLOCK_BLAST_RADIUS,
-                                    BLOCK_BLAST_POWER_MIN, BLOCK_BLAST_POWER_MAX,
-                                    BLOCK_BLAST_GRAVITY);
-        else
-            ExplosiveShockwave(cx, cy);
+        if (s->isBlock) continue;
+        ExplosiveShockwave(s->x + s->w * 0.5f, s->y + s->h * 0.5f);
     }
 
     std::vector<std::unique_ptr<Sprite>> pending;

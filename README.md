@@ -224,7 +224,7 @@ images\
 | 临爆闪烁 | ✗ 不闪 | ✓ 最后 `EXPLODE_WARN_SEC` 秒开始闪 |
 | 高速撞击扣引信 | ✗ | ✓ 相对速度 ≥ `FAST_HIT_SPEED` 时扣 `FAST_HIT_LIFE_LOSS` |
 | 被爆炸波及时 | **炸成碎片**（`BLOCK_DESTROY_IN_BLAST`） | 被炸飞，引信不变 |
-| 被炸掉之后 | 自己再放一次冲击波 → **连锁**（`BLOCK_CHAIN_EXPLOSION`） | 到点才炸 |
+| 被炸掉之后 | 只是碎掉，**不再向外传播**（不连锁） | 到点才炸 |
 | 停稳之后 | `BLOCK_STAY_SEC`（默认 12）秒后**淡出消失**，不爆炸 | 到点爆炸 |
 | 下落 / 尺寸 / 生成权重 | `BLOCK_*` 各自一套 | `EXPLOSIVE_*` 各自一套 |
 
@@ -240,15 +240,16 @@ images\
 
 ### 爆炸是怎么传播的
 
+**只传播一层，不连锁。**
+
 1. 爆炸物引信到点 → 爆炸：放一次冲击波（`EXPLOSION_RADIUS` / `EXPLOSION_POWER_*`），
    自己炸成 `DEBRIS_COLS × DEBRIS_ROWS` 的碎片。
 2. 同一次解算里，**中心落在爆炸范围内的方块**（按方块自己的中心点到爆心的距离算）
    全部被标记为炸掉，冒出方块碎片；`BLOCK_DESTROY_IN_BLAST = false` 时跳过这一步，
    方块只是被冲击波掀飞。
-3. `BLOCK_CHAIN_EXPLOSION = true` 时，被炸掉的方块**自己再放一次冲击波**
-   （用 `BLOCK_BLAST_*` 那一组，默认半径 150、威力更小），于是它范围内的方块继续被炸掉
-   —— 这就是连锁。链式展开写成一个待处理清单，每个方块只会被炸一次，不会死循环。
-   `false` 时方块照样炸成碎片，但不再向外传播。
+3. **被炸掉的方块到此为止**：它只是碎掉，不会自己再放冲击波，所以不会去炸旁边的方块。
+   爆心是一次性收集好的，本帧刚被炸掉的方块不会被当成新的爆心 —— 一颗爆炸物
+   能炸掉的就是它自己半径内的那些方块，不会一个传一个清掉整屏。
 4. 方块爆炸**不会**缩短别的爆炸物的引信，爆炸物只有"自己到点"和"被高速撞击"两条路。
 
 > WebP 依赖系统安装的解码器（Win10/11 通常自带）。
@@ -333,11 +334,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `BLOCK_FALL_SPEED_MIN` / `_MAX` | 450 / 700 | 方块下落速度范围（像素/秒） |
 | `BLOCK_STAY_SEC` | 12.0 | 停稳后停留几秒淡出消失（0 = 一直留着） |
 | `BLOCK_FADE_SEC` | 1.5 | 消失前的淡出时长（秒，0 = 直接不见） |
-| `BLOCK_DESTROY_IN_BLAST` | `true` | 爆炸范围内的方块会被炸掉 |
-| `BLOCK_CHAIN_EXPLOSION` | `true` | 被炸掉的方块自己也放冲击波（连锁） |
-| `BLOCK_BLAST_RADIUS` | 150 | 方块爆炸时自己的冲击波半径（像素） |
-| `BLOCK_BLAST_POWER_MIN` / `_MAX` | 350 / 650 | 方块冲击波初速（像素/秒） |
-| `BLOCK_BLAST_GRAVITY` | 1350 | 被方块炸飞之后的重力 |
+| `BLOCK_DESTROY_IN_BLAST` | `true` | 爆炸范围内的方块会被炸掉（不连锁） |
 
 **爆炸物 `explosives`**
 
@@ -367,7 +364,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 只有被撞飞 / 炸飞之后才够得着。
 
 <details>
-<summary>旧版本用过的键名（已改名，写旧名会被提示"不认识的键"）</summary>
+<summary>旧版本用过的键名（已改名 / 已删除，写旧名会被提示"不认识的键"）</summary>
 
 | 旧键名 | 现在叫什么 |
 |---|---|
@@ -376,6 +373,8 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `FALL_SPEED_MIN` / `_MAX` | `BLOCK_FALL_SPEED_*` + `EXPLOSIVE_FALL_SPEED_*` |
 | `SPRITE_LIFE_SEC` | `EXPLOSIVE_LIFE_SEC` |
 | `SPAWN_KEY` | `BLOCK_SPAWN_KEY` + `EXPLOSIVE_SPAWN_KEY`（一个键拆成两个） |
+| `BLOCK_CHAIN_EXPLOSION` | 已删除：方块不再连锁（写进去会被忽略） |
+| `BLOCK_BLAST_RADIUS` / `_POWER_MIN` / `_MAX` / `_GRAVITY` | 已删除：方块被炸掉时不放冲击波 |
 
 </details>
 
