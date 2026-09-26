@@ -51,13 +51,6 @@ static const int   DEBRIS_ROWS     = 4;
 static const float FALL_SPEED_MIN  = 405.0f;
 static const float FALL_SPEED_MAX  = 600.0f;
 static const int   SPRITE_SIZE     = 48;
-// 窗口顶边最低要到哪才算"能站人的平台"(相对屏幕顶端, 负值 = 顶边已经被拖到
-// 屏幕上沿外面去了, DWM 那圈不可见边框也算在里面)。
-// 原来是要求 top >= SPRITE_SIZE, 也就是顶边上面必须放得下整张图片;
-// 现在放宽到"顶边还在屏幕附近就算", 图片会被压在 y=0 骑上去, 而不是穿过窗口。
-// 拖到比这个还靠上(整个窗口基本都在屏幕外)就不再当平台了。
-// 想回到老行为就把它改成 SPRITE_SIZE。
-static const int   PLATFORM_MIN_TOP = -200;
 static const float WINDOW_SCAN_SEC = 0.08f;   // 窗口扫描间隔
 static const float FOLLOW_MAX_VX   = 250.0f;  // 超过这个速度就不再"拖着走", 改为创飞
 static const float SWEEP_MIN_VX    = 250.0f;  // 认定为"创飞"的窗口速度阈值
@@ -245,23 +238,21 @@ static bool AcceptWindow(HWND hwnd, std::vector<WindowInfo>* list)
     wi.prevRect  = r;
     wi.hasPrev   = false;
     // ---- 顶边能不能当平台 ----
-    // 原来要求 r.top >= SPRITE_SIZE(顶边上面放得下整张图片)。问题是
-    // CollideWithWindows 仍然拿这种窗口的左/右/下边当墙, 于是把窗口往上拖、
-    // 顶边进到屏幕上沿 48px 以内之后: 趴在上面的图片会被甩到窗口下方/侧方
-    // (最小穿透深度挑错了轴), 或者干脆穿过去。而且和拖动快慢无关。
-    // 现在只要顶边基本在屏幕上就算平台, 停靠时把 y 压在 0(见下面的跟随逻辑),
-    // 图片会贴着屏幕上沿骑在窗口顶边上。
+    // 这里只用"顶边上面放得下整张图片"(r.top >= SPRITE_SIZE)做一个粗判,
+    // 主要给"创飞"用。落点/停靠的真正判定是 TopEdgeFits(), 它按**精灵自己的
+    // 高度**算: 48px 的图片需要 top >= 48, 12px 的碎片只要 top >= 12。
     //
-    // 仍然排除三种: 全屏窗口 / 最大化窗口(顶边在 -7 左右, 收进来会让图片全堆在
-    // 屏幕最顶端) / 太小的窗口。最后一条只管 [PLATFORM_MIN_TOP, SPRITE_SIZE)
-    // 这一段, 免得屏幕顶端那些触控条(EdgeUiInputTopWndClass, 几像素高)和
-    // 1x1 的辅助窗口变成平台。
+    // 曾经试过把门槛放宽到"顶边贴着屏幕上沿也算", 结果是被拖到屏幕上沿的窗口
+    // (以及拖动时系统临时冒出来的全宽浮层)全变成 y=0 的架子, 新生成的图片
+    // 一出来就卡在屏幕最上方不下落。所以这里不能放宽 —— 上面放不下就是放不下,
+    // 图片会从这种窗口前面穿过去(和原来的行为一致), 但绝不会被瞬移到别处。
+    //
+    // 仍然排除: 全屏窗口 / 最大化窗口(顶边在 -7 左右) / 太小的窗口
+    // (屏幕顶端几像素高的触控条、1x1 辅助窗口)。
     const bool maximized = (IsZoomed(hwnd) != FALSE);
     const bool bigEnough = (r.right - r.left) >= SPRITE_SIZE &&
                            (r.bottom - r.top)  >= SPRITE_SIZE;
-    const bool topLow    = (r.top >= SPRITE_SIZE);                      // 老规矩
-    const bool topNear   = (r.top >= PLATFORM_MIN_TOP && bigEnough);    // 贴屏幕上沿
-    wi.platform  = (!fullscreen && !maximized && (topLow || topNear));
+    wi.platform  = (!fullscreen && !maximized && bigEnough && r.top >= SPRITE_SIZE);
     wi.occluders = std::move(occ);
     list->push_back(std::move(wi));
     return true;
@@ -319,17 +310,29 @@ static bool SweptDownPastTop(const WindowInfo& wv, float prevBottom, float newBo
     return (newBottom > curTop && prevBottom <= refTop);
 }
 
-// 同上, 但要求这条顶边确实是个能站人的平台 —— "能不能停在上面"。
-// SweptDownPastTop 则只管"是不是从上方穿过了这条边", 用来避免把图片甩到
-// 窗口下方/侧方: 就算这窗口当不成平台(顶边贴着屏幕上沿、太小、最大化…),
-// 也绝不能因为它而把图片瞬移到别处。
-static bool CrossesTopEdge(const WindowInfo& wv, float prevBottom, float newBottom)
+// 这条顶边能不能给"高 h 的精灵"当落脚点 —— 顶边上面得放得下它。
+//
+// 刻意按**精灵自己的高度**算, 而不是用全局的 wv.platform:
+//   · 48px 的图片需要 top >= 48; 12px 的碎片只要 top >= 12。
+//   · 顶边贴着屏幕上沿(top < h)的窗口放不下, 就老老实实让它穿过去,
+//     绝不能把精灵摆到 y = top - h < 0 再钳到 0 —— 那就是"图片卡在屏幕最上方
+//     不下落"。全屏/最大化窗口(top = -7)也因此自动出局, 不必再单独判。
+static bool TopEdgeFits(const WindowInfo& wv, int h)
 {
-    return wv.platform && SweptDownPastTop(wv, prevBottom, newBottom);
+    return wv.rect.top >= h;
 }
 
-// 在所有平台窗口里挑出"这一帧该落在它顶边上"的那一个(没有则 nullptr)。
-// x/w 是精灵的横向范围, prevBottom/newBottom 是底边在本帧位移前后的位置。
+// 同上, 再加上"这一帧确实是从上方越过这条顶边进来的"。
+// SweptDownPastTop 则只管穿越本身, 用来避免把图片甩到窗口下方/侧方:
+// 就算这窗口放不下(顶边贴着屏幕上沿、太小、最大化…), 也绝不能因为它
+// 而把图片瞬移到别处 —— 宁可让它按物理落出去。
+static bool CrossesTopEdge(const WindowInfo& wv, int h, float prevBottom, float newBottom)
+{
+    return TopEdgeFits(wv, h) && SweptDownPastTop(wv, prevBottom, newBottom);
+}
+
+// 在所有够格的窗口里挑出"这一帧该落在它顶边上"的那一个(没有则 nullptr)。
+// x/w/h 是精灵的横向范围与高度, prevBottom/newBottom 是底边在本帧位移前后的位置。
 //
 // 多个候选时取**顶边最高**的那个。理由:
 //   1) 正常下落时, 先碰到的当然是最高的那块平台;
@@ -338,7 +341,7 @@ static bool CrossesTopEdge(const WindowInfo& wv, float prevBottom, float newBott
 //      下一帧又被抢一次, 来回抽搐。
 // exclude 用来排除精灵当前正踩着的那块平台: 它由上层的"跟随"逻辑处理
 // (跟随还要带上水平位移), 不能在这里被当成"抢走"。
-static const WindowInfo* FindLandingTop(float x, float w, float prevBottom,
+static const WindowInfo* FindLandingTop(float x, float w, int h, float prevBottom,
                                         float newBottom, HWND exclude = nullptr)
 {
     const WindowInfo* best = nullptr;
@@ -346,7 +349,7 @@ static const WindowInfo* FindLandingTop(float x, float w, float prevBottom,
         if (exclude && wv.hwnd == exclude) continue;
         const RECT& wr = wv.rect;
         if (x + w <= wr.left || x >= wr.right) continue;
-        if (!CrossesTopEdge(wv, prevBottom, newBottom)) continue;
+        if (!CrossesTopEdge(wv, h, prevBottom, newBottom)) continue;
         if (!TopEdgeVisibleAt(wv, x + w * 0.5f)) continue;   // 顶边被压住, 不是平台
         if (!best || wr.top < best->rect.top) best = &wv;
     }
@@ -794,9 +797,14 @@ static void CollideWithWindows(Sprite* s, float prevBottom)
         // pBottom 最小, 就被甩到窗口下方 —— 视觉上就是直接穿过窗口。
         // 而且和拖动快慢完全无关, 慢速一样错。
         //
-        // 顶边被更高 Z 序窗口压住时不这么解(那不是个能站的地方),
-        // 留给下面的最小穿透深度按老办法处理。
-        if (SweptDownPastTop(wv, prevBottom, s->y + s->h) &&
+        // 三个前提:
+        //   · 顶边上面放得下这个精灵(TopEdgeFits)。放不下就不硬塞 —— 塞进去
+        //     只会被钳到 y=0, 变成"卡在屏幕最上方不下落"。
+        //   · 顶边没被更高 Z 序窗口压住(那不是个能站的地方)。
+        // 不满足就退到下面的最小穿透深度, 而那边的穿透深度上界会保证它
+        // 不会把精灵整个挪到另一条边上去。
+        if (TopEdgeFits(wv, s->h) &&
+            SweptDownPastTop(wv, prevBottom, s->y + s->h) &&
             TopEdgeVisibleAt(wv, s->x + s->w * 0.5f))
         {
             s->y = (float)wr.top - (float)s->h;
@@ -808,8 +816,7 @@ static void CollideWithWindows(Sprite* s, float prevBottom)
         }
 
         // ---- 只考虑"真的在屏幕里"、而且"真的刚穿过去"的边 ----
-        // 顶边: 必须能站人(wv.platform)。顶边在屏幕外的窗口(最大化 top=-7、
-        //       通知中心 top=0)如果按顶边解算, 图片会被摆到 y<0 直接看不见。
+        // 顶边: 上面放得下这个精灵才算(TopEdgeFits)。
         // 其余边: 必须在工作区内; 而且穿透深度不能超过一个身位。
         //       穿透深度不受限的话, "最小穿透深度"会把一个本来就待在窗口肚子里的
         //       精灵整个挪到另一条边上去 —— 这正是"瞬移到窗口下方/侧方"。
@@ -817,8 +824,14 @@ static void CollideWithWindows(Sprite* s, float prevBottom)
         //       干脆不解析, 让它按物理自己落出去。
         //       例: 通知中心 (2200,0)-(2560,1392) 的右边和底边都贴着工作区边界,
         //       只有左边的竖边是"实墙"。
-        const bool okTop    = wv.platform;
-        const bool okBottom = (wr.bottom < g_screenH) && (pBottom <= (float)s->h);
+        // 窗口底边: 只认"精灵相对窗口在往上走", 也就是它是从下面撞上来的。
+        // 不加这一条的话, 一个往下穿过窗口的精灵会在退出窗口底边的瞬间被
+        // "啪"地按到 wr.bottom 上(最多弹一个身位), 看起来就是无端跳一下。
+        const float relVy = s->vy -
+            (wv.hasPrev ? (float)(wv.rect.top - wv.prevRect.top) / g_scanDt : 0.0f);
+        const bool okTop    = TopEdgeFits(wv, s->h);
+        const bool okBottom = (wr.bottom < g_screenH) && (pBottom <= (float)s->h) &&
+                              (relVy < 0.0f);
         const bool okLeft   = (wr.left   > 0)         && (pLeft   <= (float)s->w);
         const bool okRight  = (wr.right  < g_screenW) && (pRight  <= (float)s->w);
 
@@ -955,7 +968,7 @@ static void UpdatePhysics(float dt)
                 // 正常的抛物线落顶边不会被重复处理 —— CollideWithWindows 已经
                 // 把它摆到 y = top - h, newBottom > curTop 自然不成立。
                 if (const WindowInfo* w =
-                        FindLandingTop(s->x, (float)s->w, prevBottom, s->y + s->h))
+                        FindLandingTop(s->x, (float)s->w, s->h, prevBottom, s->y + s->h))
                 {
                     s->y = (float)w->rect.top - (float)s->h;
                     if (s->vy > 0.0f) s->vy = -s->vy * 0.35f;
@@ -981,7 +994,9 @@ static void UpdatePhysics(float dt)
                 if (s->restingOn) {
                     const WindowInfo* host = nullptr;
                     for (auto& wv : g_windowList) {
-                        if (wv.hwnd == s->restingOn && wv.platform) { host = &wv; break; }
+                        // 窗口被往上拖到"顶边上面已经放不下它"时就不算平台了,
+                        // 图片会被放掉、重新下落(而不是被硬塞到 y<0 卡在屏幕顶)
+                        if (wv.hwnd == s->restingOn && TopEdgeFits(wv, s->h)) { host = &wv; break; }
                     }
                     // 有"别的"窗口这一拍从下面顶上来 -> 直接改站到它上面。
                     // 只"放掉"是不行的: 原来那块平台的顶边还在原处, 下一帧又会把
@@ -990,11 +1005,10 @@ static void UpdatePhysics(float dt)
                     if (host) {
                         const float myBottom = s->y + s->h;
                         if (const WindowInfo* thief =
-                                FindLandingTop(s->x, (float)s->w, myBottom, myBottom,
+                                FindLandingTop(s->x, (float)s->w, s->h, myBottom, myBottom,
                                                s->restingOn))
                         {
-                            s->y        = (float)thief->rect.top - (float)s->h;
-                            if (s->y < 0.0f) s->y = 0.0f;   // 顶边贴着屏幕上沿
+                            s->y         = (float)thief->rect.top - (float)s->h;
                             s->restingOn = thief->hwnd;
                             s->vy        = 0.0f;
                             resting      = true;
@@ -1007,11 +1021,8 @@ static void UpdatePhysics(float dt)
                         if (overlapX &&
                             TopEdgeVisibleAt(*host, s->x + s->w * 0.5f))
                         {
-                            // 顶边贴到屏幕上沿时把图片压在 y=0 骑上去。
-                            // 原来这里是 ny >= 0.0f 才跟随, 否则就"放掉"让它重新下落
-                            // —— 可窗口的顶边就在图片脚下, 放掉只会让它直接穿过窗口
-                            // 掉下去。压在 y=0 至少和"顶边在屏幕上沿"这件事是一致的。
-                            s->y = (ny < 0.0f) ? 0.0f : ny;
+                            // TopEdgeFits 保证了 ny >= 0, 不用再钳
+                            s->y = ny;
                             if (host->hasPrev) {
                                 const float winVx =
                                     (float)(host->rect.left - host->prevRect.left) / g_scanDt;
@@ -1041,10 +1052,9 @@ static void UpdatePhysics(float dt)
                     // "窗口自己往上冲"的情况, 否则窗口上拖时图片会直接穿过窗口
                     // 而不是被顶上去。
                     if (const WindowInfo* w =
-                            FindLandingTop(s->x, (float)s->w, prevBottom, s->y + s->h))
+                            FindLandingTop(s->x, (float)s->w, s->h, prevBottom, s->y + s->h))
                     {
                         s->y         = (float)w->rect.top - (float)s->h;
-                        if (s->y < 0.0f) s->y = 0.0f;   // 顶边贴着屏幕上沿 -> 压在 y=0
                         s->vy        = 0.0f;
                         s->restingOn = w->hwnd;
                     }
@@ -1077,7 +1087,7 @@ static void UpdatePhysics(float dt)
             // 而且因为判据里含上一拍的顶边, 停在窗口上的碎片会自动跟着窗口上下走。
             // 刻意不设 restingOn: 碎片只活 1 秒左右, 不需要水平跟随。
             if (const WindowInfo* w =
-                    FindLandingTop(s->x, (float)s->w, prevBottom, s->y + s->h))
+                    FindLandingTop(s->x, (float)s->w, s->h, prevBottom, s->y + s->h))
             {
                 s->y = (float)w->rect.top - (float)s->h;
                 if (s->vy > 0.0f) s->vy = -s->vy * 0.35f;
