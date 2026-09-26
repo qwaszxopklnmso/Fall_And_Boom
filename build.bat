@@ -139,15 +139,16 @@ rem           this MSVC decodes it as CP936 and the build fails.
 rem /MT      static CRT -> standalone exe, no VC++ redist needed.
 rem /DUNICODE keeps every API call on the W (wide) variant.
 rem windowscodecs = WIC, used to decode formats GDI+ cannot read (WebP etc).
-rem user32/gdi32/gdiplus/windowscodecs are NOT linked automatically by a
-rem bare cl command line - they must be named explicitly.
+rem dwmapi        = DwmGetWindowAttribute, used to skip DWM-cloaked windows.
+rem user32/gdi32/gdiplus/windowscodecs/dwmapi are NOT linked automatically by
+rem a bare cl command line - they must be named explicitly.
 cl /nologo /utf-8 /std:c++17 /EHsc /O2 /W3 /MT ^
    /DUNICODE /D_UNICODE ^
    "!SRC!" ^
    /Fo:"!OBJDIR!\main.obj" ^
    /Fe:"!OUTEXE!" ^
    /link /SUBSYSTEM:WINDOWS ^
-   user32.lib gdi32.lib gdiplus.lib ole32.lib windowscodecs.lib
+   user32.lib gdi32.lib gdiplus.lib ole32.lib windowscodecs.lib dwmapi.lib
 
 if errorlevel 1 (
     echo.

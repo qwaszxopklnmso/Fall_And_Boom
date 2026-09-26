@@ -35,7 +35,8 @@ build.bat clean    # 清理编译产物
 
 ```
 cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
-   /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib ole32.lib windowscodecs.lib
+   /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib ole32.lib ^
+         windowscodecs.lib dwmapi.lib
 ```
 
 > `/utf-8` **必须加**：源码是 UTF-8，不加的话中文字符串会在 GBK 代码页下报

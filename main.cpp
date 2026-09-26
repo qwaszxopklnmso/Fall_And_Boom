@@ -3,15 +3,18 @@
 //  编译: 双击 build.bat  (推荐)
 //        或手动:
 //        cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
-//           /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib ole32.lib windowscodecs.lib
+//           /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib ole32.lib ^
+//                 windowscodecs.lib dwmapi.lib
 //        注意: /utf-8 必须加, 否则中文字符串在 GBK 代码页下会编译报错;
-//              user32/gdi32/gdiplus/windowscodecs 也必须显式写出, cl 不会自动链接.
+//              user32/gdi32/gdiplus/windowscodecs/dwmapi 也必须显式写出,
+//              裸 cl 不会自动链接.
 //  退出: Ctrl+Alt+Q
 // ============================================================
 
 #define NOMINMAX
 
 #include <windows.h>
+#include <dwmapi.h>
 #include <wincodec.h>
 #include <gdiplus.h>
 
@@ -26,6 +29,7 @@
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 using namespace Gdiplus;
 
@@ -144,8 +148,22 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     if (!IsWindowVisible(hwnd)) return TRUE;
     if (IsIconic(hwnd))         return TRUE;
 
-    LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
-    if (exStyle & WS_EX_TOOLWINDOW) return TRUE;
+    // ---- DWM 隐身(cloaked)窗口必须当成不可见 ----
+    // 对这类窗口 IsWindowVisible 仍然返回 TRUE, 但它根本没被渲染。
+    // 典型: 其它虚拟桌面上的窗口、被 shell 挂起的 UWP 表面。
+    // 实测本机: "Windows 输入体验"(Windows.UI.Core.CoreWindow) 是全屏(0,0,2560,1440)
+    // 且 cloaked=2 —— 不排除它, 它就会把后面所有窗口判成"被完全遮盖",
+    // 于是那些窗口全都当不成平台。这比 TOOLWINDOW 那条过滤器影响大得多。
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) &&
+        cloaked != 0)
+        return TRUE;
+
+    // 注意: 这里以前有一句 `if (extStyle & WS_EX_TOOLWINDOW) return TRUE;`,
+    // 会把整个窗口丢掉。但 shell 的浮层几乎全是 WS_EX_TOOLWINDOW ——
+    // 开始菜单、搜索、任务视图(Win+Tab)、音量/通知中心、任务栏、桌面……
+    // 丢掉它们的后果是: 既不能遮挡, 背后被它们盖住的窗口又会被误判成可见平台。
+    // 这个样式只表示"不进 Alt+Tab / 任务栏", 并不代表窗口不可见, 所以不能拿来排除。
 
     wchar_t cls[256] = {};
     GetClassNameW(hwnd, cls, 256);
@@ -199,7 +217,11 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
     wi.rect      = r;
     wi.prevRect  = r;
     wi.hasPrev   = false;
-    wi.platform  = (!fullscreen && r.top >= 0);
+    // 顶边必须低到能站得下一张图片(r.top >= SPRITE_SIZE)。
+    // 否则图片会被摆到 y = r.top - SPRITE_SIZE < 0, 直接停到屏幕外面去。
+    // 屏幕顶端那些触控条(EdgeUiInputTopWndClass, 0..3px)、1x1 的辅助窗口
+    // 都靠这一条挡掉; 任务视图顶边也在 y=0, 同样不会被当成平台。
+    wi.platform  = (!fullscreen && r.top >= SPRITE_SIZE);
     wi.occluders = std::move(occ);
     list->push_back(std::move(wi));
     return TRUE;
