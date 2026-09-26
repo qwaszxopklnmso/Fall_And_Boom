@@ -67,12 +67,17 @@ static int   DEBRIS_ROWS     = 4;     // 爆炸碎片行数
 // 关掉 MANUAL= 只能等自动随机下落, 连键盘钩子都不会装。
 // 两个都关   = 什么都不会生成(退出热键仍然有效)。
 static bool  AUTO_SPAWN_ENABLED   = true;   // ★ 自动随机下落生成
-static bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按 "." 在鼠标位置生成
+static bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按后面两节里配的键手动生成
 
-// 按这个键, 在鼠标当前位置生成一张随机图片。
+// ---- 手动生成 ----
+// 两个键各管一类: 一个只出方块, 一个只出爆炸物。
 // 用低级键盘钩子而不是 RegisterHotKey: 注册成热键会把这个键从所有程序那里
-// 抢走(打字、输入小数点就全废了), 钩子只是旁听, 按键照样传给别的程序。
-static UINT  SPAWN_KEY_VK    = VK_OEM_PERIOD;   // 主键盘区的 "."
+// 抢走(打字、输入符号就全废了), 钩子只是旁听, 按键照样传给别的程序。
+static UINT  BLOCK_SPAWN_KEY_VK     = VK_OEM_COMMA;    // 主键盘区的 ","
+static UINT  EXPLOSIVE_SPAWN_KEY_VK = VK_OEM_PERIOD;   // 主键盘区的 "."
+
+// 手动生成请求的类别(SPAWN_RANDOM 只用于自动生成)
+enum SpawnKind { SPAWN_RANDOM = 0, SPAWN_BLOCK, SPAWN_EXPLOSIVE, SPAWN_KIND_COUNT };
 
 // 两次触发的最小间隔(毫秒)。长按的自动重复间隔只有 ~30ms, 会被这条挡掉;
 // 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
@@ -158,7 +163,7 @@ static float g_displayTimer = 0.0f;  // 分辨率/工作区变化检查节流
 // 只认 "键 = 值" 这一种行:
 //   · 键名忽略大小写、下划线、横线和空格(MAX_IMAGES / max-images / max images 等价)
 //   · '#' 或 ';' 开头的整行是注释; 行中间只有前面是空白才算注释
-//     (这样 SPAWN_KEY = ";" 这种值不会被误伤)
+//     (这样 BLOCK_SPAWN_KEY = ";" 这种值不会被误伤)
 //   · 认不出来的键、解析不了的值会被跳过并提示一次 —— 写错一个字符不影响启动
 //   · 删掉某一行 = 该参数用程序内置的默认值
 // 设计上刻意做成"坏值只影响这一项": 任何异常都能退回默认值继续跑。
@@ -203,8 +208,7 @@ static const CfgEntry kCfgTable[] = {
     { L"HIT_FLASH_SEC",         CFG_FLOAT, &HIT_FLASH_SEC,         L"被撞后\"闪一下\"的时长, 秒", 0 },
     { L"HIT_DIM",               CFG_FLOAT, &HIT_DIM,               L"闪到最浅时的 alpha, 0~1", 0 },
     { L"AUTO_SPAWN_ENABLED",    CFG_BOOL,  &AUTO_SPAWN_ENABLED,    L"自动随机下落 true / false", 0 },
-    { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"按下面那个键在鼠标位置生成 true / false", 0 },
-    { L"SPAWN_KEY",             CFG_KEY,   &SPAWN_KEY_VK,          L"手动生成按键: 一个字符(如 \".\" \"F\" \"1\")或虚拟键码数字", 0 },
+    { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"按下面两节里配的键手动生成 true / false", 0 },
     { L"SPAWN_KEY_DEBOUNCE_MS", CFG_UINT,  &SPAWN_KEY_DEBOUNCE_MS, L"同一个键两次触发的最小间隔, 毫秒(挡长按重复)", 0 },
 
     // ---------------- 方块 blocks ----------------
@@ -212,6 +216,7 @@ static const CfgEntry kCfgTable[] = {
     { L"BLOCK_MAX_IMAGES",       CFG_INT,   &BLOCK_MAX_IMAGES,       L"blocks 文件夹最多读几张(按文件名排序)", 1 },
     { L"BLOCK_SIZE",             CFG_INT,   &BLOCK_SIZE,             L"方块显示边长, 像素(会自动缩放)", 1 },
     { L"BLOCK_SPAWN_WEIGHT",     CFG_FLOAT, &BLOCK_SPAWN_WEIGHT,     L"每张方块图的生成权重, 0 = 不出方块", 1 },
+    { L"BLOCK_SPAWN_KEY",        CFG_KEY,   &BLOCK_SPAWN_KEY_VK,     L"按这个键在鼠标位置生成一个方块(一个字符或虚拟键码数字)", 1 },
     { L"BLOCK_FALL_SPEED_MIN",   CFG_FLOAT, &BLOCK_FALL_SPEED_MIN,   L"方块下落速度下限, 像素/秒", 1 },
     { L"BLOCK_FALL_SPEED_MAX",   CFG_FLOAT, &BLOCK_FALL_SPEED_MAX,   L"方块下落速度上限, 像素/秒", 1 },
     { L"BLOCK_STAY_SEC",         CFG_FLOAT, &BLOCK_STAY_SEC,         L"方块停稳后停留几秒消失(淡出, 不爆炸); 0 = 一直留着", 1 },
@@ -228,6 +233,7 @@ static const CfgEntry kCfgTable[] = {
     { L"EXPLOSIVE_MAX_IMAGES",     CFG_INT,   &EXPLOSIVE_MAX_IMAGES,     L"explosives 文件夹最多读几张(按文件名排序)", 2 },
     { L"EXPLOSIVE_SIZE",           CFG_INT,   &EXPLOSIVE_SIZE,           L"爆炸物显示边长, 像素(会自动缩放)", 2 },
     { L"EXPLOSIVE_SPAWN_WEIGHT",   CFG_FLOAT, &EXPLOSIVE_SPAWN_WEIGHT,   L"每张爆炸物图的生成权重, 0 = 不出爆炸物(和方块权重比大小)", 2 },
+    { L"EXPLOSIVE_SPAWN_KEY",      CFG_KEY,   &EXPLOSIVE_SPAWN_KEY_VK,   L"按这个键在鼠标位置生成一个爆炸物(一个字符或虚拟键码数字)", 2 },
     { L"EXPLOSIVE_FALL_SPEED_MIN", CFG_FLOAT, &EXPLOSIVE_FALL_SPEED_MIN, L"爆炸物下落速度下限, 像素/秒", 2 },
     { L"EXPLOSIVE_FALL_SPEED_MAX", CFG_FLOAT, &EXPLOSIVE_FALL_SPEED_MAX, L"爆炸物下落速度上限, 像素/秒", 2 },
     { L"EXPLOSIVE_LIFE_SEC",       CFG_FLOAT, &EXPLOSIVE_LIFE_SEC,       L"引信: 生成后几秒自己爆炸", 2 },
@@ -556,7 +562,12 @@ static void SanitizeConfig()
     }
 
     if (SPAWN_KEY_DEBOUNCE_MS > 10000) SPAWN_KEY_DEBOUNCE_MS = 10000;
-    if (SPAWN_KEY_VK == 0 || SPAWN_KEY_VK > 255) SPAWN_KEY_VK = VK_OEM_PERIOD;
+    if (BLOCK_SPAWN_KEY_VK == 0 || BLOCK_SPAWN_KEY_VK > 255)
+        BLOCK_SPAWN_KEY_VK = VK_OEM_COMMA;
+    if (EXPLOSIVE_SPAWN_KEY_VK == 0 || EXPLOSIVE_SPAWN_KEY_VK > 255)
+        EXPLOSIVE_SPAWN_KEY_VK = VK_OEM_PERIOD;
+    // 两个键撞在一起时以"方块键"为准(钩子里就是这么判的), 这里不强行改键,
+    // 免得用户明明写了两个键却被程序偷偷换掉 —— 生成文件里的注释提醒过别写一样。
 }
 
 static void LoadConfig()
@@ -1210,36 +1221,50 @@ static void FreeComposeBuffer()
 // ------------------------------------------------------------
 // 生成下落图片
 // ------------------------------------------------------------
-// 按权重随机挑一张图片: 方块用 BLOCK_SPAWN_WEIGHT, 爆炸物用 EXPLOSIVE_SPAWN_WEIGHT。
-// 权重是"每张图"的, 所以某个文件夹里图多, 那一类自然出得多。
-// 两边权重都为 0 时已经在 SanitizeConfig 里兜过底, 这里再保一次。
-static const ImageAsset* PickAsset()
+// 按类别挑一张图片。
+//   SPAWN_BLOCK / SPAWN_EXPLOSIVE: 只从那一类里等概率挑;
+//     如果那一类一张图都没有(比如 BLOCKS_ENABLED = false), 退回另一类 ——
+//     按键按下去一点反应都没有比"出了另一类"更让人困惑。
+//   随机(自动生成)时按权重: 每张方块图计 BLOCK_SPAWN_WEIGHT,
+//     每张爆炸物图计 EXPLOSIVE_SPAWN_WEIGHT, 于是某个文件夹里图多那一类就多。
+static const ImageAsset* PickAsset(SpawnKind kind)
 {
     if (g_assets.empty()) return nullptr;
 
-    double wBlock = 0.0, wBoom = 0.0;
-    for (const auto& up : g_assets) {
-        if (!up->bmp) continue;
-        if (up->isBlock) wBlock += (double)BLOCK_SPAWN_WEIGHT;
-        else             wBoom  += (double)EXPLOSIVE_SPAWN_WEIGHT;
+    auto collect = [](bool block, std::vector<const ImageAsset*>& out) {
+        for (const auto& up : g_assets)
+            if (up->bmp && up->isBlock == block) out.push_back(up.get());
+    };
+
+    bool wantBlock = false;
+    if (kind == SPAWN_BLOCK) {
+        wantBlock = true;
+    } else if (kind == SPAWN_EXPLOSIVE) {
+        wantBlock = false;
+    } else {
+        double wBlock = 0.0, wBoom = 0.0;
+        for (const auto& up : g_assets) {
+            if (!up->bmp) continue;
+            if (up->isBlock) wBlock += (double)BLOCK_SPAWN_WEIGHT;
+            else             wBoom  += (double)EXPLOSIVE_SPAWN_WEIGHT;
+        }
+        const double total = wBlock + wBoom;
+        if (total <= 0.0) return nullptr;
+        const double r = std::uniform_real_distribution<double>(0.0, total)(g_rng);
+        wantBlock = (r < wBlock);
     }
-    const double total = wBlock + wBoom;
-    if (total <= 0.0) return nullptr;
 
-    double r = std::uniform_real_distribution<double>(0.0, total)(g_rng);
-    const bool wantBlock = (r < wBlock);
-
-    // 在选中的那一类里等概率挑一张
     std::vector<const ImageAsset*> cand;
-    for (const auto& up : g_assets)
-        if (up->bmp && up->isBlock == wantBlock) cand.push_back(up.get());
+    collect(wantBlock, cand);
+    if (cand.empty()) collect(!wantBlock, cand);   // 该类没图 -> 退回另一类
     if (cand.empty()) return nullptr;
     return cand[(size_t)RandI(0, (int)cand.size() - 1)];
 }
 
 // usePos=true 时以 (px,py) 为中心生成(鼠标位置), 并夹进工作区,
 // 免得生成到屏幕外面直接看不见; 否则照旧在屏幕顶端随机横坐标生成。
-static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f)
+static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f,
+                         SpawnKind kind = SPAWN_RANDOM)
 {
     if (g_assets.empty()) return;
     if ((int)g_sprites.size() >= MAX_TOTAL) return;
@@ -1249,7 +1274,7 @@ static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f)
         if (sp->isFalling && !sp->dead) ++falling;
     if (falling >= MAX_FALLING) return;
 
-    const ImageAsset* pa = PickAsset();
+    const ImageAsset* pa = PickAsset(kind);
     if (!pa) return;
     const ImageAsset& a = *pa;
 
@@ -2182,7 +2207,7 @@ struct ComGuard
 };
 
 // ------------------------------------------------------------
-// 低级键盘钩子: 按 "." 在鼠标位置生成图片
+// 低级键盘钩子: 两个键分别在鼠标位置生成方块 / 爆炸物
 // ------------------------------------------------------------
 // overlay 窗口带 WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, 永远拿不到焦点,
 // 所以它收不到 WM_KEYDOWN; 而 RegisterHotKey 会把这个键从所有程序手里抢走。
@@ -2191,32 +2216,41 @@ struct ComGuard
 // 低级钩子由安装它的线程(主线程)在自己的消息循环里回调, 所以下面这几个
 // 变量不存在跨线程竞争 —— 钩子里只记一下位置, 真正的生成放在主循环里做。
 static HHOOK g_kbHook       = nullptr;
-static DWORD g_lastDotTick  = 0;       // 上次触发的时刻(去抖, 兼作滤掉长按自动重复)
+// 每个键各记一个时间戳: 共用一个的话, 先按逗号再按句号会被去抖挡掉一次。
+static DWORD g_lastSpawnTick[SPAWN_KIND_COUNT] = {};
 static bool  g_spawnAtMouse = false;   // 有待处理的生成请求
 static POINT g_spawnPoint   = {};
+static SpawnKind g_spawnKind = SPAWN_RANDOM;   // 这次请求要生成哪一类
 
 // 两次触发的最小间隔(毫秒)。长按的自动重复间隔只有 ~30ms, 会被这条挡掉;
 // 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
-// (数值在 config.ini 的 SPAWN_KEY_DEBOUNCE_MS)
+// (数值在 config.ini 的 SPAWN_KEY_DEBOUNCE_MS, 两个键各自计时)
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam)
 {
     if (code == HC_ACTION && lParam) {
         const KBDLLHOOKSTRUCT* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
-        if (kb->vkCode == SPAWN_KEY_VK &&
-            (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-            const DWORD now = GetTickCount();
-            if (now - g_lastDotTick >= SPAWN_KEY_DEBOUNCE_MS) {
-                g_lastDotTick = now;
-                POINT pt;
-                if (GetCursorPos(&pt)) {
-                    g_spawnPoint   = pt;
-                    g_spawnAtMouse = true;
+        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+            // 两个键撞在一起时以"方块键"为准 —— 生成文件里的注释提醒过别写一样
+            SpawnKind kind = SPAWN_KIND_COUNT;
+            if (kb->vkCode == BLOCK_SPAWN_KEY_VK)          kind = SPAWN_BLOCK;
+            else if (kb->vkCode == EXPLOSIVE_SPAWN_KEY_VK) kind = SPAWN_EXPLOSIVE;
+
+            if (kind != SPAWN_KIND_COUNT) {
+                const DWORD now = GetTickCount();
+                if (now - g_lastSpawnTick[kind] >= SPAWN_KEY_DEBOUNCE_MS) {
+                    g_lastSpawnTick[kind] = now;
+                    POINT pt;
+                    if (GetCursorPos(&pt)) {
+                        g_spawnPoint   = pt;
+                        g_spawnKind    = kind;
+                        g_spawnAtMouse = true;
+                    }
                 }
             }
         }
     }
-    // 原样放行: 别的程序该怎么收到 "." 还是怎么收到
+    // 原样放行: 别的程序该怎么收到这些键还是怎么收到
     return CallNextHookEx(g_kbHook, code, wParam, lParam);
 }
 
@@ -2389,14 +2423,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
         UpdateAnimations(dt);
 
-        // ---- 按 "." 在鼠标位置生成一张随机图片 ----
-        // 钩子回调里只记了位置, 真正干活放在这里。
+        // ---- 按配置的两个键在鼠标位置生成方块 / 爆炸物 ----
+        // 钩子回调里只记了位置和类别, 真正干活放在这里。
         // 鼠标坐标是屏幕坐标, 减去 overlay 原点换成合成缓冲坐标。
         if (MANUAL_SPAWN_ENABLED && g_spawnAtMouse) {
             g_spawnAtMouse = false;
             SpawnFalling(true,
                          (float)(g_spawnPoint.x - g_workX),
-                         (float)(g_spawnPoint.y - g_workY));
+                         (float)(g_spawnPoint.y - g_workY),
+                         g_spawnKind);
         }
 
         // ---- 自动随机下落生成 ----

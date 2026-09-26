@@ -35,7 +35,7 @@ Windows 桌面小玩具：图片从屏幕顶端掉落，落到窗口顶边会停
   但它**落在工作区里的那条侧边仍然是墙**，弹飞的图片会撞在上面
 - 爆炸产生冲击波，把半径内的其它图片一起炸飞（被炸飞不变浅）
 - 爆炸前 3 秒开始闪烁，0.6 秒一个周期
-- **按 `.` 在鼠标位置立刻生成一张随机图片**（不用等自动生成）
+- **两个手动生成键**：一个只出方块（默认 `,`），一个只出爆炸物（默认 `.`），按键位置生成，不用等自动掉落
 - **所有可调参数都在 exe 同目录的 `config.ini` 里，改完重启程序生效，不用重新编译**（见下方「配置」）
 - 光标完全穿透，不抢焦点
 
@@ -267,14 +267,14 @@ images\
 #     两边都适用的东西: 生成节奏、窗口扫描、碰撞反馈、按键
 # ------------------------------------------------------------
 DROPTIME_MIN = 0.2                # 两次自动生成的最小间隔, 秒(掉落快慢主要看这两个)
-SPAWN_KEY = "."                   # 手动生成按键
+MANUAL_SPAWN_ENABLED = true       # 按下面两节里配的键手动生成 true / false
 
 # ------------------------------------------------------------
 # --- 方块 blocks  (images\blocks)
 #     不会自己爆炸, 也不会闪; 只有被爆炸波及时才会炸成碎片
 # ------------------------------------------------------------
 BLOCK_SIZE = 48                   # 方块显示边长, 像素(会自动缩放)
-BLOCK_SPAWN_WEIGHT = 1            # 每张方块图的生成权重, 0 = 不出方块
+BLOCK_SPAWN_KEY = ","             # 按这个键在鼠标位置生成一个方块
 BLOCK_DESTROY_IN_BLAST = true     # 爆炸范围内的方块会被炸掉 true / false
 
 # ------------------------------------------------------------
@@ -282,6 +282,7 @@ BLOCK_DESTROY_IN_BLAST = true     # 爆炸范围内的方块会被炸掉 true / 
 #     有引信, 时间到了自己爆炸, 并把范围内的一切炸飞
 # ------------------------------------------------------------
 EXPLOSIVE_LIFE_SEC = 5            # 引信: 生成后几秒自己爆炸
+EXPLOSIVE_SPAWN_KEY = "."         # 按这个键在鼠标位置生成一个爆炸物
 EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 ```
 
@@ -290,7 +291,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 - 只认 `键 = 值` 这一行；键名**忽略大小写、下划线、横线和空格**
   （`BLOCK_SIZE` / `block-size` / `block size` 等价）
 - `#` 或 `;` 开头的整行是注释；行中间只有**前面是空白**才算注释
-  （所以 `SPAWN_KEY = ";"` 这种值不会被误伤）
+  （所以 `BLOCK_SPAWN_KEY = ";"` 这种值不会被误伤）
 - `[小节标题]` 会被跳过，习惯怎么写都行
 - **删掉某一行 = 该参数用内置默认值**
 - 布尔值写 `true` / `false`（也认 `1/0`、`yes/no`、`on/off`、`开/关`）
@@ -317,9 +318,8 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `DEBRIS_COLS` / `DEBRIS_ROWS` | 4 / 4 | 爆炸碎片行列数 |
 | `HIT_FLASH_SEC` / `HIT_DIM` | 0.40 / 0.50 | 被撞后闪光的时长 / 最浅 alpha |
 | `AUTO_SPAWN_ENABLED` | `true` | 自动随机下落生成（关掉就只剩手动） |
-| `MANUAL_SPAWN_ENABLED` | `true` | 按 `.` 手动生成（关掉就只剩自动） |
-| `SPAWN_KEY` | `"."` | 手动生成的按键 |
-| `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动生成的去抖间隔（毫秒） |
+| `MANUAL_SPAWN_ENABLED` | `true` | 用手动键生成（关掉就只剩自动，连钩子都不装） |
+| `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动键的去抖间隔（毫秒，两个键各自计时） |
 
 **方块 `blocks`**
 
@@ -329,6 +329,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `BLOCK_MAX_IMAGES` | 8 | `blocks` 最多读几张（按文件名排序） |
 | `BLOCK_SIZE` | 48 | 方块缩放到的边长（像素）；也是它能不能站上窗口顶边的高度门槛 |
 | `BLOCK_SPAWN_WEIGHT` | 1.0 | 每张方块图的生成权重，0 = 不出方块 |
+| `BLOCK_SPAWN_KEY` | `","` | 按这个键生成一个方块 |
 | `BLOCK_FALL_SPEED_MIN` / `_MAX` | 450 / 700 | 方块下落速度范围（像素/秒） |
 | `BLOCK_STAY_SEC` | 12.0 | 停稳后停留几秒淡出消失（0 = 一直留着） |
 | `BLOCK_FADE_SEC` | 1.5 | 消失前的淡出时长（秒，0 = 直接不见） |
@@ -346,6 +347,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `EXPLOSIVE_MAX_IMAGES` | 15 | `explosives` 最多读几张（按文件名排序） |
 | `EXPLOSIVE_SIZE` | 48 | 爆炸物缩放到的边长（像素） |
 | `EXPLOSIVE_SPAWN_WEIGHT` | 1.0 | 每张爆炸物图的生成权重（和方块权重比大小） |
+| `EXPLOSIVE_SPAWN_KEY` | `"."` | 按这个键生成一个爆炸物 |
 | `EXPLOSIVE_FALL_SPEED_MIN` / `_MAX` | 450 / 700 | 爆炸物下落速度范围（像素/秒） |
 | `EXPLOSIVE_LIFE_SEC` | 5.0 | 引信：生成后几秒自己爆炸 |
 | `EXPLODE_WARN_SEC` | 3.0 | 爆炸前多少秒开始闪烁 |
@@ -373,21 +375,38 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 | `SPRITE_SIZE` | `BLOCK_SIZE` + `EXPLOSIVE_SIZE` |
 | `FALL_SPEED_MIN` / `_MAX` | `BLOCK_FALL_SPEED_*` + `EXPLOSIVE_FALL_SPEED_*` |
 | `SPRITE_LIFE_SEC` | `EXPLOSIVE_LIFE_SEC` |
+| `SPAWN_KEY` | `BLOCK_SPAWN_KEY` + `EXPLOSIVE_SPAWN_KEY`（一个键拆成两个） |
 
 </details>
 
-## 手动生成（按 `.`）
+## 手动生成（两个键）
 
-主键盘区的 `.` 每按一次就在鼠标当前位置生成一张随机图片（以光标为中心，
-会夹进工作区，不会生成到屏幕外）。长按的自动重复会被 250ms 去抖挡掉。
+`config.ini` 里给两类图各配了一个键，按下就在**鼠标当前位置**生成一个：
+
+| 键 | 默认 | 生成 |
+|---|---|---|
+| `BLOCK_SPAWN_KEY` | `,` | 一个方块 |
+| `EXPLOSIVE_SPAWN_KEY` | `.` | 一个爆炸物 |
+
+生成点以光标为中心，会夹进工作区，不会生成到屏幕外。
+长按的自动重复会被 `SPAWN_KEY_DEBOUNCE_MS`（默认 250ms）挡掉，**两个键各自计时**
+（先按逗号再按句号不会被互相挡掉）。
+
+指定的那一类一张图都没有时（比如 `BLOCKS_ENABLED = false`，或者 `blocks` 文件夹是空的），
+按键**退回生成另一类** —— 按下去一点反应都没有比"出了另一类"更让人困惑。
+不想要某个键就把它设成另一个键一样的值（那样它永远轮不到）或干脆关掉
+`MANUAL_SPAWN_ENABLED`。
+
+键的写法：一个字符（`"."` `","` `"B"` `"1"`，引号可省）或虚拟键码数字（`0x70` 就是 F1）。
+两个键写重了不会报错，钩子里**以 `BLOCK_SPAWN_KEY` 为准**，程序不会偷偷帮你改键。
 
 自动生成和手动生成可以单独关掉（`config.ini` 里的 `AUTO_SPAWN_ENABLED` /
 `MANUAL_SPAWN_ENABLED`）：
 
 | `AUTO_SPAWN_ENABLED` | `MANUAL_SPAWN_ENABLED` | 效果 |
 |---|---|---|
-| `true` | `true` | 默认：自动随机下落，随时可以按 `.` 补一张 |
-| `false` | `true` | 屏幕一直干干净净，**只有按 `.` 才会出现图片** |
+| `true` | `true` | 默认：自动随机下落，随时可以按 `,` / `.` 各补一张 |
+| `false` | `true` | 屏幕一直干干净净，**只有按键才会出现图片** |
 | `true` | `false` | 只能等自动随机下落，连键盘钩子都不会装 |
 | `false` | `false` | 什么都不会生成（退出热键仍然有效） |
 
@@ -395,14 +414,14 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 不会白白往系统里挂一个全局键盘钩子。
 
 实现上不能用 `RegisterHotKey`：那会把这个键从**所有程序**手里抢走，
-打字、输入小数点就全废了。也不能靠 `WM_KEYDOWN` —— overlay 窗口带
+打字、输入符号就全废了。也不能靠 `WM_KEYDOWN` —— overlay 窗口带
 `WS_EX_NOACTIVATE | WS_EX_TRANSPARENT`，永远拿不到焦点。
 所以这里装的是 `WH_KEYBOARD_LL` 低级键盘钩子：全局看得见，
 但每次都 `CallNextHookEx` 把按键原样放行，别的程序完全不受影响。
 
-钩子回调里**只记录光标位置**，真正的生成放在主循环里做，避免在钩子里
+钩子回调里**只记录光标位置和类别**，真正的生成放在主循环里做，避免在钩子里
 做内存分配（低级钩子回调超时会被系统悄悄摘掉）。
-要换键就改 `config.ini` 里的 `SPAWN_KEY`（默认 `.`）。
+换键就改 `config.ini` 里的 `BLOCK_SPAWN_KEY` / `EXPLOSIVE_SPAWN_KEY`。
 
 ## 退出
 
