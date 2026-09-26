@@ -137,6 +137,14 @@ if not exist "!OBJDIR!" mkdir "!OBJDIR!"
 rem /utf-8   REQUIRED: source is UTF-8 with Chinese literals, without
 rem           this MSVC decodes it as CP936 and the build fails.
 rem /MT      static CRT -> standalone exe, no VC++ redist needed.
+rem           Verified with: dumpbin /dependents FallingImages.exe
+rem           It must list ONLY system DLLs (USER32/GDI32/gdiplus/ole32/
+rem           dwmapi/KERNEL32) - no VCRUNTIME140.dll, no MSVCP140.dll,
+rem           no api-ms-win-crt-*.dll. If those show up, /MT got lost.
+rem           DO NOT use /MTd here: that is the DEBUG static CRT, it needs
+rem           ucrtbased.dll + vcruntime140d.dll, which are neither present
+rem           on a clean machine nor redistributable. /MTd makes the exe
+rem           LESS portable, not more.
 rem /DUNICODE keeps every API call on the W (wide) variant.
 rem windowscodecs = WIC, used to decode formats GDI+ cannot read (WebP etc).
 rem dwmapi        = DwmGetWindowAttribute, used to skip DWM-cloaked windows.
