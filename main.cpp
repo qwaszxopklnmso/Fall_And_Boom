@@ -9,6 +9,10 @@
 //              user32/gdi32/gdiplus/windowscodecs/dwmapi 也必须显式写出,
 //              裸 cl 不会自动链接.
 //  退出: Ctrl+Alt+Q
+// ------------------------------------------------------------
+//  Copyright (c) 2026 qwaszxopklnm
+//  SPDX-License-Identifier: MIT        (完整协议见 LICENSE)
+//  本文件代码由 AI 生成, 作者负责提需求、测试与验收.
 // ============================================================
 
 #define NOMINMAX

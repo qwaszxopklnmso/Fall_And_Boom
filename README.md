@@ -4,6 +4,9 @@ Windows 桌面小玩具：图片从屏幕顶端掉落，落到窗口顶边会停
 被快速拖动的窗口"创飞"，存活 5 秒后炸成碎片，爆炸还会把附近的图片一起炸飞。
 被以特别快的速度撞击时，引信会缩短 2.5 秒。
 
+> 本项目**由 AI 生成**，以 **MIT** 协议发布，署名 **qwaszxopklnm**。
+> 详见文末的「AI 生成声明」与 [LICENSE](LICENSE)。
+
 ## 特性
 
 - Win32 + GDI+ 单窗口合成，整屏 layered window 一次提交
@@ -134,3 +137,21 @@ cl /nologo /utf-8 /std:c++17 /EHsc /O2 /MT /DUNICODE /D_UNICODE main.cpp ^
 
 若该组合被其它程序占用，会自动依次改用 `Ctrl+Alt+W`、`Ctrl+Alt+X`、
 `Ctrl+Alt+F12`、`Ctrl+Shift+Q`；全部失败时会弹窗提示改用任务管理器结束。
+
+## AI 生成声明
+
+本项目的代码与文字 —— `main.cpp`、`build.bat`、本 README、发布说明 ——
+**均由 AI 生成**，qwaszxopklnm 负责提需求、测试与验收。
+
+代码因此可能带有一些典型痕迹（注释偏多、防御性分支偏多、命名风格不统一），
+欢迎提 issue 指出。
+
+引用本项目时，请以 [LICENSE](LICENSE) 为准；AI 生成这一事实不改变授权方式。
+
+## 许可证
+
+**MIT License** — Copyright (c) 2026 **qwaszxopklnm**
+
+完整文本见 [LICENSE](LICENSE)。简单说：随便用、随便改、随便发，
+保留版权声明即可，作者不承担任何责任。
+
