@@ -143,7 +143,7 @@ static float FAST_HIT_LIFE_LOSS = 2.5f;    // ★ 高速撞击扣掉的引信时
 static bool  BUILDINGS_ENABLED      = true;   // ★ 关掉就完全不生成建筑(buildings 文件夹也不读)
 static int   BUILDING_MAX_IMAGES    = 8;      // ★ buildings 文件夹最多读几张(是图片文件数, 不是同屏数量)
 static int   BUILDING_SIZE          = 48;     // 建筑显示边长(像素)
-static int   BUILDING_SNAP          = 0;      // 生成位置吸附到几像素的网格(0 = 不吸附, 摆墙对齐用)
+static int   BUILDING_SNAP          = 0;      // 吸附到几像素的网格(0 = 不吸附; 设成建筑边长就能"占光标那一格")
 static int   BUILDING_BLAST_HITS    = 3;      // ★ 挨几次爆炸后自爆(0 = 永远炸不掉)
 static float BUILDING_HIT_FLASH_SEC = 0.35f;  // 建筑挨炸后"闪一下"的时长(秒, 0 = 不闪)
 static float BUILDING_HIT_DIM       = 0.45f;  // 建筑闪到最浅时的 alpha
@@ -272,7 +272,7 @@ static const CfgEntry kCfgTable[] = {
     { L"BUILDING_MAX_IMAGES",    CFG_INT,   &BUILDING_MAX_IMAGES,    L"buildings 文件夹最多读几张图(按文件名排序)", 3 },
     { L"BUILDING_SIZE",          CFG_INT,   &BUILDING_SIZE,          L"建筑显示边长, 像素(会自动缩放)", 3 },
     { L"BUILDING_SPAWN_KEY",     CFG_KEY,   &BUILDING_SPAWN_KEY_VK,  L"按这个键在鼠标位置放一个建筑(一个字符或虚拟键码数字)", 3 },
-    { L"BUILDING_SNAP",          CFG_INT,   &BUILDING_SNAP,          L"生成位置吸附到几像素的网格(0 = 不吸附, 摆墙对齐用)", 3 },
+    { L"BUILDING_SNAP",          CFG_INT,   &BUILDING_SNAP,          L"吸附到几像素的网格, 占光标所在那一格(0 = 不吸附, 摆墙对齐用)", 3 },
     { L"BUILDING_BLAST_HITS",    CFG_INT,   &BUILDING_BLAST_HITS,    L"挨几次爆炸后碎掉(0 = 永远炸不掉)", 3 },
     { L"BUILDING_HIT_FLASH_SEC", CFG_FLOAT, &BUILDING_HIT_FLASH_SEC, L"建筑挨炸后\"闪一下\"的时长, 秒(0 = 不闪)", 3 },
     { L"BUILDING_HIT_DIM",       CFG_FLOAT, &BUILDING_HIT_DIM,       L"建筑闪到最浅时的 alpha, 0~1(1 = 看不出闪)", 3 },
@@ -1476,17 +1476,35 @@ static void SpawnBuilding(float px, float py)
     s->isBuilding = true;
     s->blastHits  = 0;
 
-    // 以鼠标位置为中心放, 再夹进工作区, 免得放到屏幕外面看不见
-    s->x = px - sz * 0.5f;
-    s->y = py - sz * 0.5f;
-    if (BUILDING_SNAP > 0) {
-        s->x = std::floor(s->x / BUILDING_SNAP) * BUILDING_SNAP;
-        s->y = std::floor(s->y / BUILDING_SNAP) * BUILDING_SNAP;
-    }
     const float maxX = (float)std::max(0, g_screenW - sz);
     const float maxY = (float)std::max(0, g_screenH - sz);
-    if (s->x < 0.0f) s->x = 0.0f; else if (s->x > maxX) s->x = maxX;
-    if (s->y < 0.0f) s->y = 0.0f; else if (s->y > maxY) s->y = maxY;
+
+    if (BUILDING_SNAP > 0) {
+        // 吸附按**光标落在哪一格**算: 格子左/上边界 = floor(光标 / 格宽) * 格宽。
+        //
+        // ★ 不能先按中心对齐再对左上角向下取整(那是"光标 980 / 格宽 48 -> 912",
+        //   而 980 明明在 960..1008 这一格里)。取整把已经减掉半个身位的坐标
+        //   又往下压了一格, 光标离本格左/上边界不到半个身位时就整整偏出去一格,
+        //   而且那块建筑根本不盖住光标 —— 现象就是"放到鼠标左上方而不是当前格"。
+        const float g = (float)BUILDING_SNAP;
+        s->x = std::floor(px / g) * g;
+        s->y = std::floor(py / g) * g;
+
+        // 贴着工作区右/下边时, 退到"还能完整放下"的最后一条格线,
+        // 而不是夹成 maxX —— 那样会把网格对齐破坏掉(摆到边上就不齐了)。
+        const float gridMaxX = std::floor(maxX / g) * g;
+        const float gridMaxY = std::floor(maxY / g) * g;
+        if (s->x > gridMaxX) s->x = gridMaxX;
+        if (s->y > gridMaxY) s->y = gridMaxY;
+        if (s->x < 0.0f) s->x = 0.0f;
+        if (s->y < 0.0f) s->y = 0.0f;
+    } else {
+        // 不吸附: 以光标为中心放, 再夹进工作区, 免得放到屏幕外面看不见
+        s->x = px - sz * 0.5f;
+        s->y = py - sz * 0.5f;
+        if (s->x < 0.0f) s->x = 0.0f; else if (s->x > maxX) s->x = maxX;
+        if (s->y < 0.0f) s->y = 0.0f; else if (s->y > maxY) s->y = maxY;
+    }
 
     s->vx = 0.0f;
     s->vy = 0.0f;
