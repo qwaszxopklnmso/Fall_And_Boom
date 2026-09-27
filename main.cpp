@@ -63,11 +63,14 @@ static int   DEBRIS_ROWS     = 4;     // 爆炸碎片行数
 
 // 生成方式开关:
 // 两个都开 = 平时自动随机下落, 想手动补一张就按 "."。
-// 关掉 AUTO  = 屏幕上一直干干净净, 只有按 "." 才会出现图片。
+// 关掉 AUTO  = 屏幕上一直干干净净, 只有按键才会出现图片。
 // 关掉 MANUAL= 只能等自动随机下落, 连键盘钩子都不会装。
 // 两个都关   = 什么都不会生成(退出热键仍然有效)。
+// MANUAL 是**总开关**: 三个键的手动生成都归它管, 关掉连钩子都不装。
+// 想单独关掉某一类(例如"只要建筑, 不要方块"), 用各分节里自己的
+// BLOCK_ / EXPLOSIVE_ / BUILDING_MANUAL_SPAWN_ENABLED, 不用动总开关。
 static bool  AUTO_SPAWN_ENABLED   = true;   // ★ 自动随机下落生成
-static bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按后面两节里配的键手动生成
+static bool  MANUAL_SPAWN_ENABLED = true;   // ★ 手动生成总开关(三个键的总闸)
 
 // ---- 手动生成 ----
 // 三个键各管一类: 方块 / 爆炸物 / 建筑。
@@ -92,6 +95,7 @@ static DWORD SPAWN_KEY_DEBOUNCE_MS = 250;
 // 但被炸掉的方块自己**不会再炸**: 就这么一层, 不连锁。
 // 停稳之后 BLOCK_STAY_SEC 秒消失(淡出, 不是爆炸), 免得屏幕越堆越满。
 static bool  BLOCKS_ENABLED         = true;   // ★ 关掉就完全不生成方块
+static bool  BLOCK_MANUAL_SPAWN_ENABLED = true; // ★ 关掉 = 按 BLOCK_SPAWN_KEY 没反应(自动生成不受影响)
 static int   BLOCK_MAX_IMAGES       = 8;      // ★ blocks 文件夹最多读几张(是图片文件数, 不是同屏数量)
 static int   BLOCK_MAX_ONSCREEN     = 0;      // ★ 同屏方块数量上限(0 = 不限, 只受 MAX_FALLING 管)
 static int   BLOCK_SIZE             = 48;     // 方块显示边长(像素)
@@ -107,6 +111,7 @@ static float BLOCK_HIT_DIM          = 0.50f;  // 方块闪到最浅时的 alpha
 
 // ---- 爆炸物 explosives (images\explosives) ----
 static bool  EXPLOSIVES_ENABLED       = true; // ★ 关掉就只剩方块
+static bool  EXPLOSIVE_MANUAL_SPAWN_ENABLED = true; // ★ 关掉 = 按 EXPLOSIVE_SPAWN_KEY 没反应
 static int   EXPLOSIVE_MAX_IMAGES     = 15;   // ★ explosives 文件夹最多读几张(是图片文件数, 不是同屏数量)
 static int   EXPLOSIVE_MAX_ONSCREEN   = 0;    // ★ 同屏爆炸物数量上限(0 = 不限, 只受 MAX_FALLING 管)
 static int   EXPLOSIVE_SIZE           = 48;   // 爆炸物显示边长(像素)
@@ -141,12 +146,38 @@ static float FAST_HIT_LIFE_LOSS = 2.5f;    // ★ 高速撞击扣掉的引信时
 // 挨炸时和别的东西一样只是记账 + 闪一下, 碎的时候只出碎片、**不放冲击波**
 // (也就不会连锁炸到旁边的), 也**不挡爆炸**(爆炸照常波及它后面的东西)。
 static bool  BUILDINGS_ENABLED      = true;   // ★ 关掉就完全不生成建筑(buildings 文件夹也不读)
+static bool  BUILDING_MANUAL_SPAWN_ENABLED = true; // ★ 关掉 = 按 BUILDING_SPAWN_KEY 没反应
 static int   BUILDING_MAX_IMAGES    = 8;      // ★ buildings 文件夹最多读几张(是图片文件数, 不是同屏数量)
 static int   BUILDING_SIZE          = 48;     // 建筑显示边长(像素)
 static int   BUILDING_SNAP          = 0;      // 吸附到几像素的网格(0 = 不吸附; 设成建筑边长就能"占光标那一格")
 static int   BUILDING_BLAST_HITS    = 3;      // ★ 挨几次爆炸后自爆(0 = 永远炸不掉)
 static float BUILDING_HIT_FLASH_SEC = 0.35f;  // 建筑挨炸后"闪一下"的时长(秒, 0 = 不闪)
 static float BUILDING_HIT_DIM       = 0.45f;  // 建筑闪到最浅时的 alpha
+
+// ---- 手动生成开关(每类一个) ----
+// 三个键谁能用, 由"总开关 MANUAL_SPAWN_ENABLED + 这一类自己的开关"共同决定:
+//   总开关关掉      -> 三个键全废, 键盘钩子都不装;
+//   某一类自己关掉  -> 那个键按下去没反应(别的两个键照常)。
+// 只管**手动**: 自动随机下落(SPAWN_RANDOM)完全不看这三个开关,
+// 关掉手动只是不让你按键刷这一类, 不等于这一类不出现(那是 *_ENABLED 的活)。
+static bool ManualSpawnAllowed(SpawnKind kind)
+{
+    if (!MANUAL_SPAWN_ENABLED) return false;
+    switch (kind) {
+    case SPAWN_BLOCK:     return BLOCK_MANUAL_SPAWN_ENABLED;
+    case SPAWN_EXPLOSIVE: return EXPLOSIVE_MANUAL_SPAWN_ENABLED;
+    case SPAWN_BUILDING:  return BUILDING_MANUAL_SPAWN_ENABLED;
+    default:              return false;   // SPAWN_RANDOM 不是"手动按键"
+    }
+}
+
+// 三个键至少有一个还能用 -> 才值得往系统里挂键盘钩子
+static bool AnyManualSpawnEnabled()
+{
+    return ManualSpawnAllowed(SPAWN_BLOCK) ||
+           ManualSpawnAllowed(SPAWN_EXPLOSIVE) ||
+           ManualSpawnAllowed(SPAWN_BUILDING);
+}
 
 // ------------------------------------------------------------
 // 全局
@@ -201,11 +232,11 @@ struct CfgGroup {
     const wchar_t* descr;   // 标题下面那句说明
 };
 
-// 三个分节: 通用 / 方块 / 爆炸物。
-// config.ini 里用 "# --- 方块 blocks ---" 这样的注释行把三段分开。
+// 四个分节: 通用 / 方块 / 爆炸物 / 建筑。
+// config.ini 里用 "# --- 方块 blocks ---" 这样的注释行把四段分开。
 static const CfgGroup kCfgGroups[] = {
     { L"通用 common",
-      L"两边都适用的东西: 生成节奏、窗口扫描、碰撞反馈、按键" },
+      L"三类都适用的东西: 生成节奏、窗口扫描、碰撞反馈、按键" },
     { L"方块 blocks  (images\\blocks)",
       L"不会自己爆炸, 也不会闪; 只有被爆炸波及时才会炸成碎片" },
     { L"爆炸物 explosives  (images\\explosives)",
@@ -227,11 +258,12 @@ static const CfgEntry kCfgTable[] = {
     { L"DEBRIS_COLS",           CFG_INT,   &DEBRIS_COLS,           L"爆炸碎片列数", 0 },
     { L"DEBRIS_ROWS",           CFG_INT,   &DEBRIS_ROWS,           L"爆炸碎片行数", 0 },
     { L"AUTO_SPAWN_ENABLED",    CFG_BOOL,  &AUTO_SPAWN_ENABLED,    L"自动随机下落 true / false", 0 },
-    { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"按下面两节里配的键手动生成 true / false", 0 },
+    { L"MANUAL_SPAWN_ENABLED",  CFG_BOOL,  &MANUAL_SPAWN_ENABLED,  L"手动生成总开关: false = 三个键全废(连钩子都不装)", 0 },
     { L"SPAWN_KEY_DEBOUNCE_MS", CFG_UINT,  &SPAWN_KEY_DEBOUNCE_MS, L"同一个键两次触发的最小间隔, 毫秒(挡长按重复)", 0 },
 
     // ---------------- 方块 blocks ----------------
     { L"BLOCKS_ENABLED",         CFG_BOOL,  &BLOCKS_ENABLED,         L"false = 完全不生成方块(blocks 文件夹也不会读)", 1 },
+    { L"BLOCK_MANUAL_SPAWN_ENABLED", CFG_BOOL, &BLOCK_MANUAL_SPAWN_ENABLED, L"false = 按 BLOCK_SPAWN_KEY 没反应(自动生成不受影响)", 1 },
     { L"BLOCK_MAX_IMAGES",       CFG_INT,   &BLOCK_MAX_IMAGES,       L"blocks 文件夹最多读几张图(按文件名排序, 不是同屏数量)", 1 },
     { L"BLOCK_MAX_ONSCREEN",     CFG_INT,   &BLOCK_MAX_ONSCREEN,     L"同屏方块数量上限(0 = 不限, 只受 MAX_FALLING 管)", 1 },
     { L"BLOCK_SIZE",             CFG_INT,   &BLOCK_SIZE,             L"方块显示边长, 像素(会自动缩放)", 1 },
@@ -247,6 +279,7 @@ static const CfgEntry kCfgTable[] = {
 
     // ---------------- 爆炸物 explosives ----------------
     { L"EXPLOSIVES_ENABLED",       CFG_BOOL,  &EXPLOSIVES_ENABLED,       L"false = 完全不生成爆炸物(explosives 文件夹也不会读)", 2 },
+    { L"EXPLOSIVE_MANUAL_SPAWN_ENABLED", CFG_BOOL, &EXPLOSIVE_MANUAL_SPAWN_ENABLED, L"false = 按 EXPLOSIVE_SPAWN_KEY 没反应(自动生成不受影响)", 2 },
     { L"EXPLOSIVE_MAX_IMAGES",     CFG_INT,   &EXPLOSIVE_MAX_IMAGES,     L"explosives 文件夹最多读几张图(按文件名排序, 不是同屏数量)", 2 },
     { L"EXPLOSIVE_MAX_ONSCREEN",   CFG_INT,   &EXPLOSIVE_MAX_ONSCREEN,   L"同屏爆炸物数量上限(0 = 不限, 只受 MAX_FALLING 管)", 2 },
     { L"EXPLOSIVE_SIZE",           CFG_INT,   &EXPLOSIVE_SIZE,           L"爆炸物显示边长, 像素(会自动缩放)", 2 },
@@ -269,6 +302,7 @@ static const CfgEntry kCfgTable[] = {
 
     // ---------------- 建筑 buildings ----------------
     { L"BUILDINGS_ENABLED",      CFG_BOOL,  &BUILDINGS_ENABLED,      L"false = 完全不生成建筑(buildings 文件夹也不会读)", 3 },
+    { L"BUILDING_MANUAL_SPAWN_ENABLED", CFG_BOOL, &BUILDING_MANUAL_SPAWN_ENABLED, L"false = 按 BUILDING_SPAWN_KEY 没反应(建筑本来就只能手动放)", 3 },
     { L"BUILDING_MAX_IMAGES",    CFG_INT,   &BUILDING_MAX_IMAGES,    L"buildings 文件夹最多读几张图(按文件名排序)", 3 },
     { L"BUILDING_SIZE",          CFG_INT,   &BUILDING_SIZE,          L"建筑显示边长, 像素(会自动缩放)", 3 },
     { L"BUILDING_SPAWN_KEY",     CFG_KEY,   &BUILDING_SPAWN_KEY_VK,  L"按这个键在鼠标位置放一个建筑(一个字符或虚拟键码数字)", 3 },
@@ -463,10 +497,14 @@ static bool WriteDefaultConfig(const std::wstring& path)
     t += L"#  删掉某一行 = 该参数用程序内置的默认值\r\n";
     t += L"#  写错的键/值会被忽略并在启动时提示, 不影响程序运行\r\n";
     t += L"#\r\n";
-    t += L"#  图片分两类, 各放一个文件夹:\r\n";
+    t += L"#  图片分三类, 各放一个文件夹:\r\n";
     t += L"#     images\\blocks      方块    —— 不会自己爆炸, 只会被炸掉\r\n";
     t += L"#     images\\explosives  爆炸物  —— 有引信, 到点自己爆炸\r\n";
+    t += L"#     images\\buildings   建筑    —— 地形, 不会掉, 只能按手动键放\r\n";
     t += L"#     images 根目录下的图片按\"爆炸物\"处理(兼容老版本)\r\n";
+    t += L"#\r\n";
+    t += L"#  想换个手感: presets 文件夹里有两个预设(易碎品 / 快速), 复制到上一级\r\n";
+    t += L"#  改名 config.ini 覆盖即可(键集与本文件完全一致, 只是数值不同)。\r\n";
     t += L"#\r\n";
     t += L"#  本文件由程序自动生成, 只在它不存在时创建, 永远不会覆盖你的修改。\r\n";
     t += L"# ============================================================\r\n";
@@ -486,6 +524,10 @@ static bool WriteDefaultConfig(const std::wstring& path)
         line += L" = ";
         line += CfgValueText(e);
         while (line.size() < 34) line.push_back(L' ');
+        // 键名太长时上面的补齐没生效, 得补一个空格: 否则会生成
+        // "EXPLOSIVE_MANUAL_SPAWN_ENABLED = true# false = 按 ..." ——
+        // 读的时候"# 前面必须是空白"才算注释, 于是整串成了值, 直接报"值看不懂"。
+        if (line.back() != L' ') line.push_back(L' ');
         line += L"# ";
         line += e.comment;
         line += L"\r\n";
@@ -1323,11 +1365,23 @@ static void FreeComposeBuffer()
 //   随机(自动生成)时按权重: 每张方块图计 BLOCK_SPAWN_WEIGHT,
 //     每张爆炸物图计 EXPLOSIVE_SPAWN_WEIGHT, 于是某个文件夹里图多那一类就多。
 //     ★ 建筑**永远不参与**随机 —— 这就是"不会自然生成"。
-static const ImageAsset* PickAsset(SpawnKind kind)
+// forManual = true 表示这次是"按手动键"要图, 于是要过每类的手动开关:
+//   · 要的那一类手动关着 -> 一张都不给(调用方也就不生成);
+//   · "这一类没图就退回另一类"这条**也不能退到手动关着的那一类**上,
+//     否则关掉爆炸物的手动生成, 按 "," 时方块没了照样会掉出一个爆炸物。
+// 自动随机下落(forManual = false)完全不看那三个开关。
+static const ImageAsset* PickAsset(SpawnKind kind, bool forManual)
 {
     if (g_assets.empty()) return nullptr;
+    if (forManual && !ManualSpawnAllowed(kind)) return nullptr;
 
-    auto collect = [](bool block, std::vector<const ImageAsset*>& out) {
+    auto manualOK = [&](bool isBlock) {
+        if (!forManual) return true;
+        return isBlock ? BLOCK_MANUAL_SPAWN_ENABLED : EXPLOSIVE_MANUAL_SPAWN_ENABLED;
+    };
+
+    auto collect = [&](bool block, std::vector<const ImageAsset*>& out) {
+        if (!manualOK(block)) return;
         for (const auto& up : g_assets)
             if (up->bmp && !up->isBuilding && up->isBlock == block) out.push_back(up.get());
     };
@@ -1367,8 +1421,9 @@ static const ImageAsset* PickAsset(SpawnKind kind)
 
 // usePos=true 时以 (px,py) 为中心生成(鼠标位置), 并夹进工作区,
 // 免得生成到屏幕外面直接看不见; 否则照旧在屏幕顶端随机横坐标生成。
+// forManual=true 表示这次是按键要的(要过每类的手动开关, 见 PickAsset)。
 static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f,
-                         SpawnKind kind = SPAWN_RANDOM)
+                         SpawnKind kind = SPAWN_RANDOM, bool forManual = false)
 {
     if (g_assets.empty()) return;
     if ((int)g_sprites.size() >= MAX_TOTAL) return;
@@ -1388,7 +1443,7 @@ static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f,
         return (isBlock ? blockOnScreen : explOnScreen) >= lim;
     };
 
-    const ImageAsset* pa = PickAsset(kind);
+    const ImageAsset* pa = PickAsset(kind, forManual);
     // 自动生成随机挑到了一类已封顶的图, 就改成另一类
     // (手动指定的键不换, 只在下面挡掉)
     if (pa && kind == SPAWN_RANDOM && AtCap(pa->isBlock)) {
@@ -1396,8 +1451,9 @@ static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f,
         // 另一类被权重 0 关掉了就不换, 否则等于绕过了"0 = 不出这一类"
         const float otherWeight = otherIsBlock ? BLOCK_SPAWN_WEIGHT : EXPLOSIVE_SPAWN_WEIGHT;
         if (otherWeight > 0.0f) {
+            // 这里仍然算"自动生成", 所以不受那三个手动开关限制
             const ImageAsset* alt =
-                PickAsset(otherIsBlock ? SPAWN_BLOCK : SPAWN_EXPLOSIVE);
+                PickAsset(otherIsBlock ? SPAWN_BLOCK : SPAWN_EXPLOSIVE, false);
             if (alt && !AtCap(alt->isBlock)) pa = alt;
         }
     }
@@ -1462,8 +1518,8 @@ static void SpawnBuilding(float px, float py)
     if (g_assets.empty()) return;
     if ((int)g_sprites.size() >= MAX_TOTAL) return;
 
-    const ImageAsset* pa = PickAsset(SPAWN_BUILDING);
-    if (!pa) return;                       // 没放建筑图 -> 什么都不做(启动时会提示)
+    const ImageAsset* pa = PickAsset(SPAWN_BUILDING, true);
+    if (!pa) return;                       // 没放建筑图(或这类的键被关掉) -> 什么都不做
     const ImageAsset& a = *pa;
 
     const int sz = a.size;
@@ -2572,7 +2628,7 @@ struct ComGuard
 };
 
 // ------------------------------------------------------------
-// 低级键盘钩子: 两个键分别在鼠标位置生成方块 / 爆炸物
+// 低级键盘钩子: 三个键分别在鼠标位置生成方块 / 爆炸物 / 建筑
 // ------------------------------------------------------------
 // overlay 窗口带 WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, 永远拿不到焦点,
 // 所以它收不到 WM_KEYDOWN; 而 RegisterHotKey 会把这个键从所有程序手里抢走。
@@ -2589,7 +2645,7 @@ static SpawnKind g_spawnKind = SPAWN_RANDOM;   // 这次请求要生成哪一类
 
 // 两次触发的最小间隔(毫秒)。长按的自动重复间隔只有 ~30ms, 会被这条挡掉;
 // 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
-// (数值在 config.ini 的 SPAWN_KEY_DEBOUNCE_MS, 两个键各自计时)
+// (数值在 config.ini 的 SPAWN_KEY_DEBOUNCE_MS, 三个键各自计时)
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam)
 {
@@ -2603,7 +2659,8 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lPa
             else if (kb->vkCode == EXPLOSIVE_SPAWN_KEY_VK) kind = SPAWN_EXPLOSIVE;
             else if (kb->vkCode == BUILDING_SPAWN_KEY_VK)  kind = SPAWN_BUILDING;
 
-            if (kind != SPAWN_KIND_COUNT) {
+            // 这一类的手动生成关着就直接当没这个键: 连时间戳都不记
+            if (kind != SPAWN_KIND_COUNT && ManualSpawnAllowed(kind)) {
                 const DWORD now = GetTickCount();
                 if (now - g_lastSpawnTick[kind] >= SPAWN_KEY_DEBOUNCE_MS) {
                     g_lastSpawnTick[kind] = now;
@@ -2759,11 +2816,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
     g_spawnTimer = SPAWN_FIRST_DELAY;
 
-    // ---- 装上低级键盘钩子(按 "." 在鼠标位置生成) ----
+    // ---- 装上低级键盘钩子(按 "," / "." / "/" 在鼠标位置生成) ----
     // 放在这里是为了让上面几条出错退出的分支不用管它。
-    // 关掉手动生成就连钩子都不装 —— 免得白白往系统里挂一个全局键盘钩子。
+    // 三个键一个都不让用(总开关关了, 或者每类都关了)就连钩子都不装 ——
+    // 免得白白往系统里挂一个全局键盘钩子。
     // 失败也不弹窗: 只是少一个手动生成的功能, 程序照常跑。
-    if (MANUAL_SPAWN_ENABLED)
+    if (AnyManualSpawnEnabled())
         g_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
 
     bool running = true;
@@ -2795,13 +2853,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
         // ---- 按配置的三个键在鼠标位置生成方块 / 爆炸物 / 建筑 ----
         // 钩子回调里只记了位置和类别, 真正干活放在这里。
         // 鼠标坐标是屏幕坐标, 减去 overlay 原点换成合成缓冲坐标。
-        if (MANUAL_SPAWN_ENABLED && g_spawnAtMouse) {
+        // 这里再过一次手动开关: 钩子那关是主要的, 这关是兜底(万一以后
+        // 有别的路往 g_spawnAtMouse 里塞请求)。
+        if (g_spawnAtMouse && ManualSpawnAllowed(g_spawnKind)) {
             g_spawnAtMouse = false;
             const float mx = (float)(g_spawnPoint.x - g_workX);
             const float my = (float)(g_spawnPoint.y - g_workY);
             // 建筑走自己那条路: 它不掉、不吃 MAX_FALLING, 也不能进精灵间碰撞
             if (g_spawnKind == SPAWN_BUILDING) SpawnBuilding(mx, my);
-            else                               SpawnFalling(true, mx, my, g_spawnKind);
+            else                               SpawnFalling(true, mx, my, g_spawnKind, true);
         }
 
         // ---- 自动随机下落生成 ----

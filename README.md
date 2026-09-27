@@ -42,7 +42,9 @@ Windows 桌面小玩具：图片从屏幕顶端掉落，落到窗口顶边会停
 - 爆炸产生冲击波，把半径内的其它图片一起炸飞（被炸飞不变浅）
 - 爆炸前 3 秒开始闪烁，0.6 秒一个周期
 - **三个手动生成键**：`,` 只出方块、`.` 只出爆炸物、`/` 放一块**建筑**（地形），
-  都在光标位置生成，不用等自动掉落（见下方「手动生成」）
+  都在光标位置生成，不用等自动掉落；**三个键可以各关各的**（见下方「手动生成」）
+- **`presets\` 里带两个调好的配置**（**易碎品** / **快速**），复制过去覆盖 `config.ini` 就能换手感
+  （见下方「预设」）
 - **所有可调参数都在 exe 同目录的 `config.ini` 里，改完重启程序生效，不用重新编译**（见下方「配置」）
 - 光标完全穿透，不抢焦点
 
@@ -444,7 +446,7 @@ images\
 **碎的时候不放冲击波**，所以一块墙被炸掉不会顺手清掉半屏（不连锁）。
 `BUILDING_BLAST_HITS = 0` 表示永远炸不掉。
 
-
+## 配置（`config.ini`）
 
 **所有可调参数都在 exe 同目录的 `config.ini` 里，改完重启程序生效，不用重新编译。**
 
@@ -454,15 +456,16 @@ images\
 ```ini
 # ------------------------------------------------------------
 # --- 通用 common
-#     两边都适用的东西: 生成节奏、窗口扫描、碰撞反馈、按键
+#     三类都适用的东西: 生成节奏、窗口扫描、碰撞反馈、按键
 # ------------------------------------------------------------
 DROPTIME_MIN = 0.2                # 两次自动生成的最小间隔, 秒(掉落快慢主要看这两个)
-MANUAL_SPAWN_ENABLED = true       # 按下面两节里配的键手动生成 true / false
+MANUAL_SPAWN_ENABLED = true       # 手动生成总开关: false = 三个键全废(连钩子都不装)
 
 # ------------------------------------------------------------
 # --- 方块 blocks  (images\blocks)
 #     不会自己爆炸, 也不会闪; 只有被爆炸波及时才会炸成碎片
 # ------------------------------------------------------------
+BLOCK_MANUAL_SPAWN_ENABLED = true # false = 按 BLOCK_SPAWN_KEY 没反应(自动生成不受影响)
 BLOCK_SIZE = 48                   # 方块显示边长, 像素(会自动缩放)
 BLOCK_SPAWN_KEY = ","             # 按这个键在鼠标位置生成一个方块
 BLOCK_DESTROY_IN_BLAST = true     # 爆炸范围内的方块会被炸掉 true / false
@@ -471,6 +474,7 @@ BLOCK_DESTROY_IN_BLAST = true     # 爆炸范围内的方块会被炸掉 true / 
 # --- 爆炸物 explosives  (images\explosives)
 #     有引信, 时间到了自己爆炸, 并把范围内的一切炸飞
 # ------------------------------------------------------------
+EXPLOSIVE_MANUAL_SPAWN_ENABLED = true # false = 按 EXPLOSIVE_SPAWN_KEY 没反应
 EXPLOSIVE_LIFE_SEC = 5            # 引信: 生成后几秒自己爆炸
 EXPLOSIVE_SPAWN_KEY = "."         # 按这个键在鼠标位置生成一个爆炸物
 EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
@@ -480,6 +484,7 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 #     地形: 不掉、不被窗口推、不被爆炸掀飞, 放下来就一直在那
 #     只有按下面的键才会出现 —— 自动随机下落永远不挑它
 # ------------------------------------------------------------
+BUILDING_MANUAL_SPAWN_ENABLED = true # false = 按 BUILDING_SPAWN_KEY 没反应
 BUILDING_SIZE = 48                # 建筑显示边长, 像素(会自动缩放)
 BUILDING_SPAWN_KEY = "/"          # 按这个键在鼠标位置放一个建筑
 BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉)
@@ -516,14 +521,15 @@ BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉
 | `MAX_FALLING` / `MAX_TOTAL` | 20 / 220 | 同屏下落中（**方块 + 爆炸物合计**，建筑不占）/ 精灵总数上限 |
 | `DEBRIS_COLS` / `DEBRIS_ROWS` | 4 / 4 | 爆炸碎片行列数 |
 | `AUTO_SPAWN_ENABLED` | `true` | 自动随机下落生成（关掉就只剩手动） |
-| `MANUAL_SPAWN_ENABLED` | `true` | 用手动键生成（关掉就只剩自动，连钩子都不装） |
-| `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动键的去抖间隔（毫秒，两个键各自计时） |
+| `MANUAL_SPAWN_ENABLED` | `true` | 手动生成**总开关**（关掉三个键全废，连钩子都不装） |
+| `SPAWN_KEY_DEBOUNCE_MS` | 250 | 手动键的去抖间隔（毫秒，三个键各自计时） |
 
 **方块 `blocks`**
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `BLOCKS_ENABLED` | `true` | 关掉就完全不生成方块（`blocks` 文件夹也不读） |
+| `BLOCK_MANUAL_SPAWN_ENABLED` | `true` | 关掉 = 按方块键没反应（只管**手动**，自动生成照旧） |
 | `BLOCK_MAX_IMAGES` | 8 | `blocks` 最多读几张**图**（按文件名排序，不是同屏数量） |
 | `BLOCK_MAX_ONSCREEN` | 0 | 同屏方块数量上限（0 = 不限，只受 `MAX_FALLING` 管） |
 | `BLOCK_SIZE` | 48 | 方块缩放到的边长（像素）；也是它能不能站上窗口顶边的高度门槛 |
@@ -541,6 +547,7 @@ BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `EXPLOSIVES_ENABLED` | `true` | 关掉就只剩方块 |
+| `EXPLOSIVE_MANUAL_SPAWN_ENABLED` | `true` | 关掉 = 按爆炸物键没反应（只管**手动**，自动生成照旧） |
 | `EXPLOSIVE_MAX_IMAGES` | 15 | `explosives` 最多读几张**图**（按文件名排序，不是同屏数量） |
 | `EXPLOSIVE_MAX_ONSCREEN` | 0 | 同屏爆炸物数量上限（0 = 不限，只受 `MAX_FALLING` 管） |
 | `EXPLOSIVE_SIZE` | 48 | 爆炸物缩放到的边长（像素） |
@@ -563,6 +570,7 @@ BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `BUILDINGS_ENABLED` | `true` | 关掉就完全不生成建筑（`buildings` 文件夹也不读） |
+| `BUILDING_MANUAL_SPAWN_ENABLED` | `true` | 关掉 = 按建筑键没反应（建筑本来就只能手动放） |
 | `BUILDING_MAX_IMAGES` | 8 | `buildings` 最多读几张**图**（按文件名排序，不是同屏数量） |
 | `BUILDING_SIZE` | 48 | 建筑缩放到的边长（像素） |
 | `BUILDING_SPAWN_KEY` | `"/"` | 按这个键放一块建筑 |
@@ -596,6 +604,28 @@ BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉
 
 </details>
 
+## 预设（换手感）
+
+`presets\` 里带了两个调好的配置，想换个感觉不用自己一项项改：
+
+| 预设 | 一句话 | 和 `config.ini` 的主要差别 |
+|---|---|---|
+| `presets\config_fragile.ini`<br>**易碎品** | 满屏连锁炸，谁也留不住 | 爆炸半径 310 → 550、冲击波 500/900 → 1580/2000、碎片 4×4 → 8×8、下落速度 450/700 → 1301/1800、方块不再淡出（`BLOCK_STAY_SEC = 0`）、墙挨一下就碎（`BUILDING_BLAST_HITS` 3 → 1）、被高速撞击扣 4.99 秒引信（默认 2.5） |
+| `presets\config_fast.ini`<br>**快速/高配置** | 小颗粒满天掉，地上很快铺满碎渣 | 图片 48 → **24** 像素、同屏下落上限 120 → **300**、下落 1100~2000、碎片 4×4 → **9×9**、按键去抖 250 → 50 毫秒（可以疯狂按）、爆炸半径反而缩到 250（炸得碎，但不会一炸清半屏） |
+
+用法：把文件**复制到上一级目录**（exe 旁边），改名成 `config.ini` 覆盖掉现有的，
+重启程序生效。想再改回来也一样 —— 预设的**键集和 `config.ini` 完全一致**，
+只是数值不同，两份可以直接对着看。
+
+不想下整个压缩包的话，这两个预设也单独挂在 Release 上（链接永远指向最新一版）：
+
+- [config_fragile.ini（易碎品）](https://github.com/qwaszxopklnmso/Fall_And_Boom/releases/latest/download/config_fragile.ini)
+- [config_fast.ini（快速/高配置）](https://github.com/qwaszxopklnmso/Fall_And_Boom/releases/latest/download/config_fast.ini)
+
+> 预设就是普通配置文件，没有任何特殊格式：也可以只从里面抄几行到自己的 `config.ini`。
+> 但它记的是**当时那一版**的键集 —— 程序以后加了新键，预设里没有的那些键就用内置默认值，
+> 不会报错，只是"预设没管到"。
+
 ## 手动生成（三个键）
 
 `config.ini` 里给三类图各配了一个键，按下就在**鼠标当前位置**生成一个：
@@ -610,12 +640,33 @@ BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉
 长按的自动重复会被 `SPAWN_KEY_DEBOUNCE_MS`（默认 250ms）挡掉，**三个键各自计时**
 （先按逗号再按句号不会被互相挡掉）。
 
+### 三个键可以各关各的
+
+除了总开关 `MANUAL_SPAWN_ENABLED`，每一类还有自己的 `*_MANUAL_SPAWN_ENABLED`：
+
+| 开关 | 关掉之后 |
+|---|---|
+| `MANUAL_SPAWN_ENABLED = false` | **总闸**：三个键全废，连键盘钩子都不装 |
+| `BLOCK_MANUAL_SPAWN_ENABLED = false` | 按 `,` 没反应；`. /` 照常 |
+| `EXPLOSIVE_MANUAL_SPAWN_ENABLED = false` | 按 `.` 没反应 |
+| `BUILDING_MANUAL_SPAWN_ENABLED = false` | 按 `/` 没反应（等于关掉建筑） |
+
+三个都关掉时也不装钩子 —— 反正没人用了。
+
+两个容易搞混的点：
+
+- 它只管**手动**。关掉 `BLOCK_MANUAL_SPAWN_ENABLED` 只是不让你按键刷方块，
+  自动随机下落照样出方块；想让这一类彻底不出现，要用 `BLOCKS_ENABLED`
+  / `EXPLOSIVES_ENABLED` / `BUILDINGS_ENABLED`。
+- 它连"退回另一类"都管。按 `,` 时如果方块一张图都没有，本来会退回掉一个爆炸物；
+  但如果 `EXPLOSIVE_MANUAL_SPAWN_ENABLED = false`，退回这条路也被堵上 ——
+  你刚说了不要手动出爆炸物，程序就不该绕个弯给你一个。
+
 指定的那一类一张图都没有时（比如 `BLOCKS_ENABLED = false`，或者 `blocks` 文件夹是空的），
 按键**退回生成另一类** —— 按下去一点反应都没有比"出了另一类"更让人困惑。
 **只有建筑不退回**：它是地形，要一块"墙"却掉下来一个方块比什么都不出更莫名其妙，
 所以 `buildings` 是空的时候按 `/` 就是没反应（启动时那张提示会列出各类读到了几张）。
-不想要某个键就把它设成另一个键一样的值（那样它永远轮不到）或干脆关掉
-`MANUAL_SPAWN_ENABLED`。
+不想要某个键就把它设成另一个键一样的值（那样它永远轮不到）或干脆关掉它那一类的开关。
 
 键的写法：一个字符（`"."` `","` `"/"` `"B"` `"1"`，引号可省）或虚拟键码数字（`0x70` 就是 F1）。
 三个键写重了不会报错，钩子里**以 `BLOCK_SPAWN_KEY` > `EXPLOSIVE_SPAWN_KEY` > `BUILDING_SPAWN_KEY` 为准**，
@@ -629,9 +680,12 @@ BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉
 | `true` | `true` | 默认：自动随机下落，随时可以按 `,` / `.` / `/` 各补一张 |
 | `false` | `true` | 屏幕一直干干净净，**只有按键才会出现图片** |
 | `true` | `false` | 只能等自动随机下落，连键盘钩子都不会装 |
-| `false` | `false` | 什么都不会生成（退出热键仍然有效） |
+| `false` | `false` | 什么都不会生成（退出热键仍有效） |
 
-关掉 `MANUAL_SPAWN_ENABLED` 时连 `WH_KEYBOARD_LL` 钩子都不装，
+（想"只要自动、不要手动"，也可以只关三个 `*_MANUAL_SPAWN_ENABLED`，
+效果和关总开关一样 —— 反正一个键都不剩时不装钩子。）
+
+关掉 `MANUAL_SPAWN_ENABLED`（或者三类的手动全关）时连 `WH_KEYBOARD_LL` 钩子都不装，
 不会白白往系统里挂一个全局键盘钩子。
 
 实现上不能用 `RegisterHotKey`：那会把这个键从**所有程序**手里抢走，
