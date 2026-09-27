@@ -560,6 +560,14 @@ EXPLOSION_RADIUS = 310            # 爆炸冲击波半径, 像素
 若该组合被其它程序占用，会自动依次改用 `Ctrl+Alt+W`、`Ctrl+Alt+X`、
 `Ctrl+Alt+F12`、`Ctrl+Shift+Q`；全部失败时会弹窗提示改用任务管理器结束。
 
+## 版本号约定
+
+目前是 `1.0.x`：**一个版本号 = 一次已推送的修复或小功能**，每个版本都能在
+[提交记录](https://github.com/qwaszxopklnmso/Fall_And_Boom/commits/main) 和 tag 里查到。
+
+下一次**大更新**（成组的新能力，不是零散修 bug）且已经做到基本无 bug 时，
+直接跳到 **`1.1.0`**，不再逐个走 `1.0.x`。
+
 ## AI 生成声明
 
 本项目的代码与文字 —— `main.cpp`、`build.bat`、本 README、发布说明 ——
