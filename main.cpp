@@ -56,7 +56,7 @@ static float DROPTIME_MAX    = 1.3f;  // ★ 两次自动生成的最大间隔(�
 static float WINDOW_SCAN_SEC = 0.09f; // 窗口扫描间隔
 static float FOLLOW_SANITY_VX = 20000.0f; // 跟随窗口时的荒谬值上限(挡矩形抖动)
 static float SWEEP_MIN_VX    = 260.0f;// 认定为"创飞"的窗口速度阈值
-static int   MAX_FALLING     = 20;    // 同屏"正在下落"的数量上限(方块 + 爆炸物)
+static int   MAX_FALLING     = 120;   // 同屏"正在下落"的数量上限(方块 + 爆炸物)
 static int   MAX_TOTAL       = 220;   // 精灵总数上限(含爆炸碎片)
 static int   DEBRIS_COLS     = 4;     // 爆炸碎片列数
 static int   DEBRIS_ROWS     = 4;     // 爆炸碎片行数
@@ -106,8 +106,8 @@ static float BLOCK_STAY_SEC         = 12.0f;  // 停稳后停留几秒消失(0 =
 static float BLOCK_FADE_SEC         = 1.5f;   // 消失前的淡出时长(秒)
 static bool  BLOCK_DESTROY_IN_BLAST = true;   // ★ 爆炸范围内的方块会被炸掉
 // 碰撞反馈: 被撞/被创飞时"闪一下"再恢复(不再按剩余寿命长时间发灰)
-static float BLOCK_HIT_FLASH_SEC    = 0.40f;  // 方块"闪一下"的总时长(秒, 0 = 不闪)
-static float BLOCK_HIT_DIM          = 0.50f;  // 方块闪到最浅时的 alpha
+static float BLOCK_HIT_FLASH_SEC    = 0.10f;  // 方块"闪一下"的总时长(秒, 0 = 不闪)
+static float BLOCK_HIT_DIM          = 0.63f;  // 方块闪到最浅时的 alpha
 
 // ---- 爆炸物 explosives (images\explosives) ----
 static bool  EXPLOSIVES_ENABLED       = true; // ★ 关掉就只剩方块
@@ -118,13 +118,13 @@ static int   EXPLOSIVE_SIZE           = 48;   // 爆炸物显示边长(像素)
 static float EXPLOSIVE_SPAWN_WEIGHT   = 1.0f; // ★ 生成权重, 和方块按比例随机
 static float EXPLOSIVE_FALL_SPEED_MIN = 450.0f; // 爆炸物下落速度下限(像素/秒)
 static float EXPLOSIVE_FALL_SPEED_MAX = 700.0f; // 爆炸物下落速度上限(像素/秒)
-static float EXPLOSIVE_HIT_FLASH_SEC  = 0.40f;  // 爆炸物"闪一下"的总时长(秒, 0 = 不闪)
-static float EXPLOSIVE_HIT_DIM        = 0.50f;  // 爆炸物闪到最浅时的 alpha
+static float EXPLOSIVE_HIT_FLASH_SEC  = 0.30f;  // 爆炸物"闪一下"的总时长(秒, 0 = 不闪)
+static float EXPLOSIVE_HIT_DIM        = 0.58f;  // 爆炸物闪到最浅时的 alpha
 
 static float EXPLOSIVE_LIFE_SEC   = 5.0f;   // ★ 引信: 生成后几秒爆炸
 static float EXPLODE_WARN_SEC     = 3.0f;   // ★ 爆炸前多少秒开始闪烁
-static float EXPLODE_BLINK_PERIOD = 0.6f;   // ★ 闪烁周期(秒)
-static float EXPLODE_BLINK_MIN    = 0.45f;  // 闪烁时最浅的 alpha
+static float EXPLODE_BLINK_PERIOD = 0.48f;  // ★ 闪烁周期(秒)
+static float EXPLODE_BLINK_MIN    = 0.48f;  // 闪烁时最浅的 alpha
 
 static float EXPLOSION_RADIUS    = 310.0f;  // 爆炸冲击波半径(像素)
 static float EXPLOSION_POWER_MIN = 500.0f;  // 冲击波初速(范围边缘)
@@ -149,7 +149,7 @@ static bool  BUILDINGS_ENABLED      = true;   // ★ 关掉就完全不生成建
 static bool  BUILDING_MANUAL_SPAWN_ENABLED = true; // ★ 关掉 = 按 BUILDING_SPAWN_KEY 没反应
 static int   BUILDING_MAX_IMAGES    = 8;      // ★ buildings 文件夹最多读几张(是图片文件数, 不是同屏数量)
 static int   BUILDING_SIZE          = 48;     // 建筑显示边长(像素)
-static int   BUILDING_SNAP          = 0;      // 吸附到几像素的网格(0 = 不吸附; 设成建筑边长就能"占光标那一格")
+static int   BUILDING_SNAP          = 48;     // 吸附到几像素的网格(0 = 不吸附; 等于建筑边长就"占光标那一格")
 static int   BUILDING_BLAST_HITS    = 3;      // ★ 挨几次爆炸后自爆(0 = 永远炸不掉)
 static float BUILDING_HIT_FLASH_SEC = 0.35f;  // 建筑挨炸后"闪一下"的时长(秒, 0 = 不闪)
 static float BUILDING_HIT_DIM       = 0.45f;  // 建筑闪到最浅时的 alpha
