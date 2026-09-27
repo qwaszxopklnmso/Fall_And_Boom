@@ -1500,18 +1500,28 @@ static void CollideWithWindows(Sprite* s, float prevX, float prevBottom)
         const float pLeft   = newRight - (float)wr.left;
         const float pRight  = (float)wr.right - s->x;
 
-        // ---- 参照矩形: 这一拍和上一拍"并起来"的那一层 ----
+        // ---- 参照矩形 ----
         // 窗口矩形每 WINDOW_SCAN_SEC 才采样一次, 快速拖动时一帧能跳几十像素。
         // 只拿当前矩形判"上一拍在外面"是判不出来的(窗口一冲, 上一拍的位置早就
-        // 不在当前矩形里了), 所以窗口动过的那条边要用上一拍的位置。
+        // 不在当前矩形里了), 所以要比的是**上一拍自己的矩形**。
+        //
+        // ★ 纵向用并集(取更宽的那一层), 横向用上一拍的矩形 —— 这个不对称是故意的:
+        //   · 纵向并集让"上一拍在上面 / 在下面"更容易成立, 是为了兜住
+        //     "窗口顶边升上来把精灵吞进去"(fromTop / RisingTopLifts), 少了它
+        //     窗口上拖就会穿过精灵;
+        //   · 横向**不能**用并集。并集的左边界是 min(上一拍左, 这一拍左),
+        //     窗口往左拖时它就等于这一拍的左边界, 于是"上一拍整个在窗口左边"
+        //     永远判不出来 —— 精灵被判成"上一拍就已经在窗口肚子里",
+        //     落进最小穿透回退, 表现为**窗口侧缘从精灵身上直接滑过去(穿模)**。
+        //     窗口往右拖时同理, 并集的右边界等于这一拍的右边界。
         const float refTop    = (wv.hasPrev && (float)wv.prevRect.top    > (float)wr.top)    ? (float)wv.prevRect.top    : (float)wr.top;
         const float refBottom = (wv.hasPrev && (float)wv.prevRect.bottom < (float)wr.bottom) ? (float)wv.prevRect.bottom : (float)wr.bottom;
-        const float refLeft   = (wv.hasPrev && (float)wv.prevRect.left   < (float)wr.left)   ? (float)wv.prevRect.left   : (float)wr.left;
-        const float refRight  = (wv.hasPrev && (float)wv.prevRect.right  > (float)wr.right)  ? (float)wv.prevRect.right  : (float)wr.right;
+        const float prevL     = wv.hasPrev ? (float)wv.prevRect.left  : (float)wr.left;
+        const float prevR     = wv.hasPrev ? (float)wv.prevRect.right : (float)wr.right;
 
         // ---- 上一拍这个精灵在窗口的哪一面 ----
-        const bool wasLeft  = (prevRight <= refLeft);
-        const bool wasRight = (prevX     >= refRight);
+        const bool wasLeft  = (prevRight <= prevL);
+        const bool wasRight = (prevX     >= prevR);
         const bool wasAbove = (prevBottom <= refTop);
         const bool wasBelow = (prevTop   >= refBottom);
         const bool inX      = !wasLeft && !wasRight;   // 上一拍横向就和窗口重叠了
@@ -1593,12 +1603,62 @@ static void CollideWithWindows(Sprite* s, float prevX, float prevBottom)
             // 精灵是从左边进来的 -> 推回窗口左侧
             s->x = (float)wr.left - (float)s->w;
             if (s->vx > 0.0f) s->vx = -s->vx * 0.5f;
+            // 左缘是"迎面扫过来"的: 让精灵至少跟上墙速。
+            // 只推位置不给速度的话, 墙比精灵快, 每一拍都会重新压上来,
+            // 表现为 WINDOW_SCAN_SEC 一次的 ~20px 抖动 —— 给速度后就贴着墙走。
+            if (wv.hasPrev) {
+                const float winVx = (float)(wr.left - wv.prevRect.left) / g_scanDt;
+                if (winVx < 0.0f && s->vx > winVx) s->vx = winVx;
+            }
         } else {
             // 精灵是从右边进来的 -> 推回窗口右侧
             s->x = (float)wr.right;
             if (s->vx < 0.0f) s->vx = -s->vx * 0.5f;
+            if (wv.hasPrev) {
+                const float winVx = (float)(wr.right - wv.prevRect.right) / g_scanDt;
+                if (winVx > 0.0f && s->vx < winVx) s->vx = winVx;
+            }
         }
         break; // 一帧只处理一次窗口碰撞
+    }
+}
+
+// ------------------------------------------------------------
+// 侧面推开(只做横向)
+// ------------------------------------------------------------
+// 为什么单独有这么一段: 上面那个 CollideWithWindows 只有 **gravity > 0** 的精灵
+// 才会调用, 也就是必须先进"抛物线"状态。而进抛物线有两条路 —— 爆炸, 或者
+// 被窗口"创飞"(要求窗口横向速度 >= SWEEP_MIN_VX)。
+// 于是窗口**慢慢**横向推过来时(低于创飞阈值), 精灵一直待在匀速下落分支里,
+// 对窗口的侧缘完全没有反应: 窗口就从精灵身上滑过去了。
+// 这一段补的就是它 —— 纯横向, 不碰顶边(顶边是 FindLandingTop 的活),
+// 也不动"停在平台顶边上"那套跟随逻辑。
+//
+// 判据和 CollideWithWindows 一致: 上一拍整个在窗口竖边的外面, 这一拍那条边
+// 越过了它 -> 被这条边推着走。所以**静止的窗口永远不会推**(上一拍就不在外面),
+// 窗口刚出现在列表里(没有上一拍)也永远不会推。
+static void PushOutBySideEdge(Sprite* s, float prevX)
+{
+    const float prevRight = prevX + (float)s->w;
+    const float newRight  = s->x + (float)s->w;
+
+    for (auto& wv : g_windowList) {
+        if (!wv.hasPrev) continue;
+        const RECT& wr = wv.rect;
+        if (newRight <= (float)wr.left || s->x >= (float)wr.right) continue;
+        if (s->y + s->h <= (float)wr.top || s->y >= (float)wr.bottom) continue;
+
+        const bool wasLeft  = (prevRight <= (float)wv.prevRect.left);
+        const bool wasRight = (prevX     >= (float)wv.prevRect.right);
+
+        if (wasLeft && newRight > (float)wr.left) {
+            s->x = (float)wr.left - (float)s->w;
+            break;
+        }
+        if (wasRight && s->x < (float)wr.right) {
+            s->x = (float)wr.right;
+            break;
+        }
     }
 }
 
@@ -1624,6 +1684,9 @@ static void UpdatePhysics(float dt)
         if (s->dead) continue;
 
         if (s->isFalling) {
+            // 本帧位移之前的位置(侧撞判定要用; 匀速下落分支自己也会改 x —— 跟随平台)
+            const float startX = s->x;
+
             // 被快速水平移动的窗口"创飞"
             if (s->gravity == 0.0f) {
                 for (auto& wv : g_windowList) {
@@ -1803,6 +1866,11 @@ static void UpdatePhysics(float dt)
                         s->restingOn = nullptr;
                     }
                 }
+
+                // 4) 慢速横向扫过来的窗口侧缘 —— 还得再补一次横向推动,
+                //    因为"创飞"有 SWEEP_MIN_VX 门槛, 慢速拖窗口时精灵根本进不了
+                //    抛物线分支, 上面那个 CollideWithWindows 轮不到它。
+                PushOutBySideEdge(s, startX);
             }
         }
         else {
