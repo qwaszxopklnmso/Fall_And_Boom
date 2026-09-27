@@ -70,14 +70,17 @@ static bool  AUTO_SPAWN_ENABLED   = true;   // ★ 自动随机下落生成
 static bool  MANUAL_SPAWN_ENABLED = true;   // ★ 按后面两节里配的键手动生成
 
 // ---- 手动生成 ----
-// 两个键各管一类: 一个只出方块, 一个只出爆炸物。
+// 三个键各管一类: 方块 / 爆炸物 / 建筑。
 // 用低级键盘钩子而不是 RegisterHotKey: 注册成热键会把这个键从所有程序那里
 // 抢走(打字、输入符号就全废了), 钩子只是旁听, 按键照样传给别的程序。
+// 建筑**只能**这样手动放: 它不参与自动随机下落(见 PickAsset 的 SPAWN_RANDOM 分支)。
 static UINT  BLOCK_SPAWN_KEY_VK     = VK_OEM_COMMA;    // 主键盘区的 ","
 static UINT  EXPLOSIVE_SPAWN_KEY_VK = VK_OEM_PERIOD;   // 主键盘区的 "."
+static UINT  BUILDING_SPAWN_KEY_VK  = VK_OEM_2;        // 主键盘区的 "/"
 
 // 手动生成请求的类别(SPAWN_RANDOM 只用于自动生成)
-enum SpawnKind { SPAWN_RANDOM = 0, SPAWN_BLOCK, SPAWN_EXPLOSIVE, SPAWN_KIND_COUNT };
+enum SpawnKind { SPAWN_RANDOM = 0, SPAWN_BLOCK, SPAWN_EXPLOSIVE, SPAWN_BUILDING,
+                 SPAWN_KIND_COUNT };
 
 // 两次触发的最小间隔(毫秒)。长按的自动重复间隔只有 ~30ms, 会被这条挡掉;
 // 而且它是"比时间戳"而不是"记按键状态", 所以就算漏掉一次 KEYUP 也不会卡死。
@@ -127,6 +130,23 @@ static float FAST_HIT_SPEED     = 1650.0f; // ★ 相对速度超过它算"特�
                                            //   定得比自由落体上限高, 所以普通下落互撞
                                            //   永远不会触发, 只有被撞飞/炸飞后才够
 static float FAST_HIT_LIFE_LOSS = 2.5f;    // ★ 高速撞击扣掉的引信时间(秒)
+
+// ---- 建筑 buildings (images\buildings) ----
+// 地形。三个"不会":
+//   · 不自然生成 —— 只有按 BUILDING_SPAWN_KEY 才会出现, 自动随机下落永远不挑它;
+//   · 不自然移动 —— 不掉落、不被窗口推、不被爆炸掀飞, 放哪就一直在哪;
+//   · 不会自己消失 —— 没有寿命, 只有挨满 BUILDING_BLAST_HITS 次爆炸才碎。
+// 反过来它是**实心**的: 其它精灵能落在它顶边(地板)、被它侧面挡住(墙壁)、
+// 从下面顶到它底边(天花板)。
+// 挨炸时和别的东西一样只是记账 + 闪一下, 碎的时候只出碎片、**不放冲击波**
+// (也就不会连锁炸到旁边的), 也**不挡爆炸**(爆炸照常波及它后面的东西)。
+static bool  BUILDINGS_ENABLED      = true;   // ★ 关掉就完全不生成建筑(buildings 文件夹也不读)
+static int   BUILDING_MAX_IMAGES    = 8;      // ★ buildings 文件夹最多读几张(是图片文件数, 不是同屏数量)
+static int   BUILDING_SIZE          = 48;     // 建筑显示边长(像素)
+static int   BUILDING_SNAP          = 0;      // 生成位置吸附到几像素的网格(0 = 不吸附, 摆墙对齐用)
+static int   BUILDING_BLAST_HITS    = 3;      // ★ 挨几次爆炸后自爆(0 = 永远炸不掉)
+static float BUILDING_HIT_FLASH_SEC = 0.35f;  // 建筑挨炸后"闪一下"的时长(秒, 0 = 不闪)
+static float BUILDING_HIT_DIM       = 0.45f;  // 建筑闪到最浅时的 alpha
 
 // ------------------------------------------------------------
 // 全局
@@ -190,6 +210,8 @@ static const CfgGroup kCfgGroups[] = {
       L"不会自己爆炸, 也不会闪; 只有被爆炸波及时才会炸成碎片" },
     { L"爆炸物 explosives  (images\\explosives)",
       L"有引信, 时间到了自己爆炸, 并把范围内的一切炸飞" },
+    { L"建筑 buildings  (images\\buildings)",
+      L"地形: 不掉不被推不被炸飞, 只按手动键放; 挨满几次爆炸才碎" },
 };
 
 static const CfgEntry kCfgTable[] = {
@@ -244,6 +266,16 @@ static const CfgEntry kCfgTable[] = {
     { L"EXPLOSION_GRAVITY",        CFG_FLOAT, &EXPLOSION_GRAVITY,        L"被炸飞之后的重力", 2 },
     { L"FAST_HIT_SPEED",           CFG_FLOAT, &FAST_HIT_SPEED,           L"相对速度超过它算\"特别快的撞击\", 像素/秒", 2 },
     { L"FAST_HIT_LIFE_LOSS",       CFG_FLOAT, &FAST_HIT_LIFE_LOSS,       L"高速撞击扣掉的引信时间, 秒(只对爆炸物有效)", 2 },
+
+    // ---------------- 建筑 buildings ----------------
+    { L"BUILDINGS_ENABLED",      CFG_BOOL,  &BUILDINGS_ENABLED,      L"false = 完全不生成建筑(buildings 文件夹也不会读)", 3 },
+    { L"BUILDING_MAX_IMAGES",    CFG_INT,   &BUILDING_MAX_IMAGES,    L"buildings 文件夹最多读几张图(按文件名排序)", 3 },
+    { L"BUILDING_SIZE",          CFG_INT,   &BUILDING_SIZE,          L"建筑显示边长, 像素(会自动缩放)", 3 },
+    { L"BUILDING_SPAWN_KEY",     CFG_KEY,   &BUILDING_SPAWN_KEY_VK,  L"按这个键在鼠标位置放一个建筑(一个字符或虚拟键码数字)", 3 },
+    { L"BUILDING_SNAP",          CFG_INT,   &BUILDING_SNAP,          L"生成位置吸附到几像素的网格(0 = 不吸附, 摆墙对齐用)", 3 },
+    { L"BUILDING_BLAST_HITS",    CFG_INT,   &BUILDING_BLAST_HITS,    L"挨几次爆炸后碎掉(0 = 永远炸不掉)", 3 },
+    { L"BUILDING_HIT_FLASH_SEC", CFG_FLOAT, &BUILDING_HIT_FLASH_SEC, L"建筑挨炸后\"闪一下\"的时长, 秒(0 = 不闪)", 3 },
+    { L"BUILDING_HIT_DIM",       CFG_FLOAT, &BUILDING_HIT_DIM,       L"建筑闪到最浅时的 alpha, 0~1(1 = 看不出闪)", 3 },
 };
 
 // ---- 小工具 ----
@@ -551,19 +583,31 @@ static void SanitizeConfig()
     clampF(FAST_HIT_LIFE_LOSS, 0.0f, EXPLOSIVE_LIFE_SEC);
 
     // 两个都关掉就什么都生成不出来了 —— 至少留一类
+    // (建筑不算: 它不参与自动下落, 光有建筑屏幕上会一直是空的)
     if (!BLOCKS_ENABLED && !EXPLOSIVES_ENABLED) BLOCKS_ENABLED = EXPLOSIVES_ENABLED = true;
     if (BLOCK_SPAWN_WEIGHT <= 0.0f && EXPLOSIVE_SPAWN_WEIGHT <= 0.0f) {
         BLOCK_SPAWN_WEIGHT = 1.0f;
         EXPLOSIVE_SPAWN_WEIGHT = 1.0f;
     }
 
+    // ---- 建筑 ----
+    clampI(BUILDING_MAX_IMAGES, 1, 512);
+    clampI(BUILDING_SIZE, 8, 512);
+    clampI(BUILDING_SNAP, 0, 512);
+    clampI(BUILDING_BLAST_HITS, 0, 10000);
+    clampF(BUILDING_HIT_FLASH_SEC, 0.0f, 60.0f);
+    clampF(BUILDING_HIT_DIM, 0.0f, 1.0f);
+
     if (SPAWN_KEY_DEBOUNCE_MS > 10000) SPAWN_KEY_DEBOUNCE_MS = 10000;
     if (BLOCK_SPAWN_KEY_VK == 0 || BLOCK_SPAWN_KEY_VK > 255)
         BLOCK_SPAWN_KEY_VK = VK_OEM_COMMA;
     if (EXPLOSIVE_SPAWN_KEY_VK == 0 || EXPLOSIVE_SPAWN_KEY_VK > 255)
         EXPLOSIVE_SPAWN_KEY_VK = VK_OEM_PERIOD;
-    // 两个键撞在一起时以"方块键"为准(钩子里就是这么判的), 这里不强行改键,
-    // 免得用户明明写了两个键却被程序偷偷换掉 —— 生成文件里的注释提醒过别写一样。
+    if (BUILDING_SPAWN_KEY_VK == 0 || BUILDING_SPAWN_KEY_VK > 255)
+        BUILDING_SPAWN_KEY_VK = VK_OEM_2;
+    // 三个键撞在一起时以"方块键 > 爆炸物键 > 建筑键"为准(钩子里就是这么判的),
+    // 这里不强行改键, 免得用户明明写了不同的键却被程序偷偷换掉 ——
+    // 生成文件里的注释提醒过别写一样。
 }
 
 static void LoadConfig()
@@ -684,6 +728,18 @@ struct WindowInfo {
 };
 
 static std::vector<WindowInfo> g_windowList;
+
+// ---- 实心体列表: 窗口 + 建筑, 每帧重建 ----
+// 所有"精灵被什么挡住/停在什么上面"的判定都走这一份, 而不是 g_windowList。
+// 建筑精灵被"当成一个不动的窗口"塞进来:
+//   · rect == prevRect 且 hasPrev = true —— 它永远不动, 于是所有"上一拍在哪一面"
+//     的判据退化成"相对这个静止矩形在哪一面", 正好是实心地形该有的行为;
+//   · platform = false —— 逐出"创飞"那条路(建筑不该把精灵横向打飞);
+//   · hwnd 里塞的是精灵指针, 只当身份用(restingOn 靠它认领自己的平台),
+//     绝不会被传给任何 Win32 API —— 建表的地方是 RebuildSolids()。
+// 创飞 / 遮挡 / 扫描这些"真窗口才有意义"的逻辑仍然只看 g_windowList。
+static std::vector<WindowInfo> g_solids;
+
 // 本次扫描时的前台窗口。有两个用途:
 //   · z-band 窗口去重(见下);
 //   · 遮挡判定里"用户正在操作的那个窗口"要特殊对待。
@@ -938,7 +994,7 @@ static const WindowInfo* FindLandingTop(float x, float w, int h, float prevBotto
                                         float newBottom, HWND exclude = nullptr)
 {
     const WindowInfo* best = nullptr;
-    for (auto& wv : g_windowList) {
+    for (auto& wv : g_solids) {
         if (exclude && wv.hwnd == exclude) continue;
         const RECT& wr = wv.rect;
         if (x + w <= wr.left || x >= wr.right) continue;
@@ -1019,10 +1075,18 @@ struct Sprite
     // 方块: 没有引信, 不会自己爆炸, 也不会闪;
     // 只有被爆炸波及才会炸掉(见 UpdatePhysics 里的连锁判定)。
     bool isBlock   = false;
+    // 建筑: 纯静态地形。三个"不会"(不自然生成/不自然移动/不随时间消失)之外,
+    // 它是**实心**的 —— 别的精灵能落在它顶边、被它侧面挡住、从下面顶到它底边。
+    // 注意 isFalling 对建筑恒为 false: 一来它不掉, 二来 MAX_FALLING 数的是
+    // isFalling 的精灵, 当墙用本来就要摆很多块, 不该去挤下落名额。
+    bool isBuilding = false;
+    // 建筑专用: 已经挨过几次爆炸。攒够 BUILDING_BLAST_HITS 就碎掉。
+    int  blastHits = 0;
     bool dead = false;
 
-    // 停在哪一个窗口的顶边上(没有则 nullptr)。
-    // 有了它才能跟着窗口做"垂直"移动 —— 只靠"离顶边多少像素"是判断不出来的。
+    // 停在哪一个"实心体"的顶边上(没有则 nullptr)。
+    // 有了它才能跟着它做"垂直"移动 —— 只靠"离顶边多少像素"是判断不出来的。
+    // 值来自 WindowInfo::hwnd: 真窗口就是 HWND, 建筑是那个精灵的指针。
     HWND restingOn = nullptr;
 };
 
@@ -1037,14 +1101,16 @@ static std::unique_ptr<Sprite> MakeSprite(Bitmap* src, int rx, int ry, int rw, i
     return s;
 }
 
-// 碰撞闪烁的时长 / 最浅 alpha —— 方块和爆炸物各一套配置。
-// 触发和还原都必须走这两个函数: 两类的时长不一样, 用错常数就会闪到一半卡住。
+// 碰撞闪烁的时长 / 最浅 alpha —— 方块 / 爆炸物 / 建筑 各一套配置。
+// 触发和还原都必须走这两个函数: 三类的时长不一样, 用错常数就会闪到一半卡住。
 static float HitFlashSec(const Sprite* s)
 {
+    if (s->isBuilding) return BUILDING_HIT_FLASH_SEC;
     return s->isBlock ? BLOCK_HIT_FLASH_SEC : EXPLOSIVE_HIT_FLASH_SEC;
 }
 static float HitDim(const Sprite* s)
 {
+    if (s->isBuilding) return BUILDING_HIT_DIM;
     return s->isBlock ? BLOCK_HIT_DIM : EXPLOSIVE_HIT_DIM;
 }
 
@@ -1060,8 +1126,9 @@ struct ImageAsset
     std::vector<UINT> delayMs;   // 每帧延时(毫秒)
     float   timer = 0.0f;        // 当前帧已显示的时间
     float   life  = 3.0f;        // 爆炸物: 引信秒数; 方块: 用 BLOCK_STAY_SEC, 这里不看
-    int     size  = 48;          // 这张图的显示边长(方块/爆炸物各自的配置)
+    int     size  = 48;          // 这张图的显示边长(方块/爆炸物/建筑各自的配置)
     bool    isBlock = false;     // true = 来自 images\blocks
+    bool    isBuilding = false;  // true = 来自 images\buildings (和 isBlock 互斥)
     int     dx = 0, dy = 0, dw = 0, dh = 0;   // 居中缩放后的位置(相对 size×size)
 };
 
@@ -1251,16 +1318,27 @@ static void FreeComposeBuffer()
 //   SPAWN_BLOCK / SPAWN_EXPLOSIVE: 只从那一类里等概率挑;
 //     如果那一类一张图都没有(比如 BLOCKS_ENABLED = false), 退回另一类 ——
 //     按键按下去一点反应都没有比"出了另一类"更让人困惑。
+//   SPAWN_BUILDING: 只从建筑里挑, 而且**不退回**别的类。
+//     建筑是地形, 要"墙"却给你掉下来一个方块, 比什么都不出更莫名其妙。
 //   随机(自动生成)时按权重: 每张方块图计 BLOCK_SPAWN_WEIGHT,
 //     每张爆炸物图计 EXPLOSIVE_SPAWN_WEIGHT, 于是某个文件夹里图多那一类就多。
+//     ★ 建筑**永远不参与**随机 —— 这就是"不会自然生成"。
 static const ImageAsset* PickAsset(SpawnKind kind)
 {
     if (g_assets.empty()) return nullptr;
 
     auto collect = [](bool block, std::vector<const ImageAsset*>& out) {
         for (const auto& up : g_assets)
-            if (up->bmp && up->isBlock == block) out.push_back(up.get());
+            if (up->bmp && !up->isBuilding && up->isBlock == block) out.push_back(up.get());
     };
+
+    if (kind == SPAWN_BUILDING) {
+        std::vector<const ImageAsset*> b;
+        for (const auto& up : g_assets)
+            if (up->bmp && up->isBuilding) b.push_back(up.get());
+        if (b.empty()) return nullptr;
+        return b[(size_t)RandI(0, (int)b.size() - 1)];
+    }
 
     bool wantBlock = false;
     if (kind == SPAWN_BLOCK) {
@@ -1270,7 +1348,7 @@ static const ImageAsset* PickAsset(SpawnKind kind)
     } else {
         double wBlock = 0.0, wBoom = 0.0;
         for (const auto& up : g_assets) {
-            if (!up->bmp) continue;
+            if (!up->bmp || up->isBuilding) continue;   // 建筑不参与随机
             if (up->isBlock) wBlock += (double)BLOCK_SPAWN_WEIGHT;
             else             wBoom  += (double)EXPLOSIVE_SPAWN_WEIGHT;
         }
@@ -1326,6 +1404,10 @@ static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f,
     if (!pa || AtCap(pa->isBlock)) return;
     const ImageAsset& a = *pa;
 
+    // 建筑不走这条路(见 SpawnBuilding): 它是地形, 没有下落速度也不能算进 MAX_FALLING。
+    // 万一将来有人手滑把 SPAWN_BUILDING 传进来, 这里直接挡住, 免得出个"会掉下来的墙"。
+    if (a.isBuilding) return;
+
     const int sz = a.size;
     auto s = MakeSprite(a.bmp, 0, 0, sz, sz);
     if (!s) return;
@@ -1361,6 +1443,60 @@ static void SpawnFalling(bool usePos = false, float px = 0.0f, float py = 0.0f,
     s->gravity = 0.0f;
     s->alpha = 1.0f;
     s->hitFlash = 0.0f;
+
+    g_sprites.push_back(std::move(s));
+}
+
+// ------------------------------------------------------------
+// 放一块建筑(地形)
+// ------------------------------------------------------------
+// 和下落精灵的三点不同:
+//   · isFalling = false —— 不掉、不算进 MAX_FALLING(当墙用要摆很多块,
+//     不该把下落名额挤掉), 也不参与"精灵之间碰撞"那一段(那是给会动的东西准备的);
+//   · life 固定 1.0 —— 自然消失的判定是 life <= 0, 它永远走不到,
+//     所以建筑不会自己淡出/消失, 只有挨满爆炸次数才会碎;
+//   · 由 g_solids 把它当成一个"不动的实心体"喂给碰撞解算, 于是别的精灵
+//     能落在它顶边、被它侧面挡住、从下面顶到它底边。
+static void SpawnBuilding(float px, float py)
+{
+    if (g_assets.empty()) return;
+    if ((int)g_sprites.size() >= MAX_TOTAL) return;
+
+    const ImageAsset* pa = PickAsset(SPAWN_BUILDING);
+    if (!pa) return;                       // 没放建筑图 -> 什么都不做(启动时会提示)
+    const ImageAsset& a = *pa;
+
+    const int sz = a.size;
+    auto s = MakeSprite(a.bmp, 0, 0, sz, sz);
+    if (!s) return;
+
+    s->isFalling  = false;
+    s->isDebris   = false;
+    s->isBlock    = false;
+    s->isBuilding = true;
+    s->blastHits  = 0;
+
+    // 以鼠标位置为中心放, 再夹进工作区, 免得放到屏幕外面看不见
+    s->x = px - sz * 0.5f;
+    s->y = py - sz * 0.5f;
+    if (BUILDING_SNAP > 0) {
+        s->x = std::floor(s->x / BUILDING_SNAP) * BUILDING_SNAP;
+        s->y = std::floor(s->y / BUILDING_SNAP) * BUILDING_SNAP;
+    }
+    const float maxX = (float)std::max(0, g_screenW - sz);
+    const float maxY = (float)std::max(0, g_screenH - sz);
+    if (s->x < 0.0f) s->x = 0.0f; else if (s->x > maxX) s->x = maxX;
+    if (s->y < 0.0f) s->y = 0.0f; else if (s->y > maxY) s->y = maxY;
+
+    s->vx = 0.0f;
+    s->vy = 0.0f;
+    s->gravity = 0.0f;
+    s->baseFallSpeed = 0.0f;
+    s->alpha = 1.0f;
+    s->hitFlash = 0.0f;
+    s->fadeStartLife = 0.0f;
+    // 永远 > 0: 自然消失的判定是 life <= 0, 建筑不该被那条捡走。
+    s->maxLife = s->life = 1.0f;
 
     g_sprites.push_back(std::move(s));
 }
@@ -1433,6 +1569,8 @@ static void ApplyExplosionShockwave(float cx, float cy,
     for (auto& sp : g_sprites) {
         Sprite* s = sp.get();
         if (s->dead || !s->src) continue;
+        // 建筑是地形, 冲击波不掀它(它只记"被炸了一次", 见 UpdatePhysics 里的计数)
+        if (s->isBuilding) continue;
 
         float dx = (s->x + s->w * 0.5f) - cx;
         float dy = (s->y + s->h * 0.5f) - cy;
@@ -1489,7 +1627,7 @@ static void CollideWithWindows(Sprite* s, float prevX, float prevBottom)
     const float newBottom = s->y + (float)s->h;
     const float newRight  = s->x + (float)s->w;
 
-    for (auto& wv : g_windowList) {
+    for (auto& wv : g_solids) {
         const RECT& wr = wv.rect;
         if (newRight <= (float)wr.left || s->x >= (float)wr.right) continue;
         if (newBottom <= (float)wr.top  || s->y >= (float)wr.bottom) continue;
@@ -1642,7 +1780,7 @@ static void PushOutBySideEdge(Sprite* s, float prevX)
     const float prevRight = prevX + (float)s->w;
     const float newRight  = s->x + (float)s->w;
 
-    for (auto& wv : g_windowList) {
+    for (auto& wv : g_solids) {
         if (!wv.hasPrev) continue;
         const RECT& wr = wv.rect;
         if (newRight <= (float)wr.left || s->x >= (float)wr.right) continue;
@@ -1663,6 +1801,39 @@ static void PushOutBySideEdge(Sprite* s, float prevX)
 }
 
 // ------------------------------------------------------------
+// 每帧重建"实心体"列表: 真窗口 + 建筑精灵
+// ------------------------------------------------------------
+// 碰撞解算(CollideWithWindows / FindLandingTop / PushOutBySideEdge / 停靠跟随)
+// 全部只看这一份列表。建筑被包装成一个"永远不动的窗口":
+//   rect == prevRect, hasPrev = true, platform = false,
+//   hwnd 放精灵指针(只当身份, 不会进任何 Win32 API)。
+// 每帧重建是必须的 —— 建筑随时会被放下来或者被炸碎, 而窗口列表
+// 是每 WINDOW_SCAN_SEC 才扫一次的。
+static void RebuildSolids()
+{
+    g_solids.clear();
+    g_solids.reserve(g_windowList.size() + 16);
+    for (const auto& w : g_windowList) g_solids.push_back(w);
+
+    for (auto& sp : g_sprites) {
+        const Sprite* s = sp.get();
+        if (!s->isBuilding || s->dead) continue;
+
+        WindowInfo wi;
+        wi.hwnd = reinterpret_cast<HWND>(const_cast<Sprite*>(s));
+        wi.rect.left   = (LONG)std::lround(s->x);
+        wi.rect.top    = (LONG)std::lround(s->y);
+        wi.rect.right  = wi.rect.left + s->w;
+        wi.rect.bottom = wi.rect.top  + s->h;
+        wi.prevRect    = wi.rect;      // 不动: 上一拍 == 这一拍
+        wi.hasPrev     = true;
+        wi.platform    = false;        // 不参与"创飞"
+        wi.coversWorkArea = false;
+        g_solids.push_back(std::move(wi));
+    }
+}
+
+// ------------------------------------------------------------
 // 物理更新
 // ------------------------------------------------------------
 static void UpdatePhysics(float dt)
@@ -1678,12 +1849,23 @@ static void UpdatePhysics(float dt)
         g_scanTimer = WINDOW_SCAN_SEC;
     }
 
+    // 窗口列表可能刚换过, 建筑也可能刚被放下/炸碎 —— 每帧重建一次实心体表
+    RebuildSolids();
+
     // ---- 逐个精灵更新 ----
     for (auto& sp : g_sprites) {
         Sprite* s = sp.get();
         if (s->dead) continue;
 
-        if (s->isFalling) {
+        if (s->isBuilding) {
+            // ---- 建筑: 纯静态地形 ----
+            // 这里**故意什么都不做**: 不掉、不被窗口推、不被爆炸掀飞,
+            // 放下来之后位置就再也不会变。
+            // 挨炸闪光的倒计时在下面公共的"透明度"那一段统一走 ——
+            // 千万别在这里再减一次 dt, 否则建筑会以两倍速闪。
+            // life 恒为 1.0, 所以"自然消失"那条也永远轮不到它。
+        }
+        else if (s->isFalling) {
             // 本帧位移之前的位置(侧撞判定要用; 匀速下落分支自己也会改 x —— 跟随平台)
             const float startX = s->x;
 
@@ -1769,13 +1951,16 @@ static void UpdatePhysics(float dt)
                 //    只跟水平是不够的: 窗口往上/斜上的时候图片会被"穿过"或横着滑走。
                 if (s->restingOn) {
                     const WindowInfo* host = nullptr;
-                    for (auto& wv : g_windowList) {
-                        // 只要这个窗口还在列表里就继续跟着它 —— 这里**不**再要求
+                    for (auto& wv : g_solids) {
+                        // 只要这个"实心体"还在列表里就继续跟着它 —— 这里**不**再要求
                         // TopEdgeFits。窗口被往上拖到顶边上面放不下时, 图片会压在
                         // y=0 继续跟着走; 放掉它才是错的: 用户看到的是"图片莫名其妙
                         // 从窗口顶边上掉下去"。
                         // (新图片能不能"落"在这种窗口上是另一回事, 那条走
                         //  FindLandingTop/CrossesTopEdge, 仍然是严格的 TopEdgeFits。)
+                        // 建筑也是实心体, 所以停在建筑上的图片同样从这里认领平台 ——
+                        // 建筑不动(hasPrev 且 prevRect == rect), 下面按窗速外推的那段
+                        // 自然是 0, 等价于"每帧精确对齐它的顶边"。
                         if (wv.hwnd == s->restingOn) { host = &wv; break; }
                     }
                     // 有"别的"窗口这一拍从下面顶上来 -> 直接改站到它上面。
@@ -2058,6 +2243,7 @@ static void UpdatePhysics(float dt)
     //   · 爆炸物(引信到点)  -> 炸: 放冲击波 + 炸成碎片
     //   · 方块(停稳超时)    -> 只是消失, 不炸(它的 life 是"停留倒计时")
     //   · 碎片              -> 只是消失
+    // (建筑不在这里: 它的 life 恒为 1, 只会被下面的"挨炸计数"清掉)
     std::vector<Sprite*> toExplode;
     for (auto& sp : g_sprites) {
         if (sp->dead) continue;
@@ -2071,15 +2257,18 @@ static void UpdatePhysics(float dt)
         toExplode.push_back(sp.get());
     }
 
+    // ---- 本次真正"爆炸"的中心(只有爆炸物) ----
+    // 一次性收集好, 后面炸方块和炸建筑都用它 —— 这样本帧刚被炸掉的
+    // 方块/建筑不会被当成新的爆心, 也就不会连锁。
+    // (方块和建筑都不放冲击波, 所以它们永远不会进这份列表。)
+    std::vector<const Sprite*> blasts;
+    for (Sprite* s : toExplode)
+        if (!s->isBlock && !s->isBuilding) blasts.push_back(s);
+
     // ---- 爆炸范围内的方块会被炸掉 ----
     // 只有"爆炸物爆炸"会触发, 而且**不传播**: 被炸掉的方块只是碎掉,
     // 不会再放冲击波去炸旁边的方块。(早先那版会连锁, 一颗就能清屏。)
-    // 爆心先收集好, 再统一扫方块 —— 这样本帧刚被炸掉的方块不会被当成新的爆心。
     if (BLOCK_DESTROY_IN_BLAST && EXPLOSION_RADIUS > 0.0f) {
-        std::vector<const Sprite*> blasts;
-        for (Sprite* s : toExplode)
-            if (!s->isBlock) blasts.push_back(s);
-
         for (const Sprite* src : blasts) {
             const float cx = src->x + src->w * 0.5f;
             const float cy = src->y + src->h * 0.5f;
@@ -2092,12 +2281,32 @@ static void UpdatePhysics(float dt)
         }
     }
 
+    // ---- 建筑挨炸: 记一次, 攒够 BUILDING_BLAST_HITS 就碎 ----
+    // 建筑**不挡爆炸**(爆炸照常波及它后面的东西), 自己也不会被掀飞。
+    // 一次爆炸只记 1 次(不是每帧都记): 爆心是"本帧刚炸的那些爆炸物",
+    // 每颗爆炸物对同一块建筑只会走一遍下面的循环。
+    if (BUILDING_BLAST_HITS > 0 && EXPLOSION_RADIUS > 0.0f) {
+        for (const Sprite* src : blasts) {
+            const float cx = src->x + src->w * 0.5f;
+            const float cy = src->y + src->h * 0.5f;
+            for (auto& sp : g_sprites) {
+                if (sp->dead || !sp->isBuilding) continue;
+                if (!InsideBlast(sp.get(), cx, cy, EXPLOSION_RADIUS)) continue;
+                sp->hitFlash = HitFlashSec(sp.get());     // 闪一下, 让玩家看得出"挨了一下"
+                if (++sp->blastHits >= BUILDING_BLAST_HITS) {
+                    sp->dead = true;
+                    // 碎掉: 和方块一样只出碎片, **不放冲击波** ——
+                    // 否则一块墙被炸掉会顺手清掉半屏, 那就成连锁了。
+                    toExplode.push_back(sp.get());
+                }
+            }
+        }
+    }
+
     // ---- 冲击波: 只有爆炸物会放 ----
-    // 方块被炸掉时没有冲击波, 只有它自己那一堆碎片。
-    // ---- 冲击波: 只有爆炸物会放 ----
-    // 方块被炸掉时没有冲击波, 只有它自己那一堆碎片。
+    // 方块和建筑被炸掉时没有冲击波, 只有它们自己那一堆碎片。
     for (Sprite* s : toExplode) {
-        if (s->isBlock) continue;
+        if (s->isBlock || s->isBuilding) continue;
         ExplosiveShockwave(s->x + s->w * 0.5f, s->y + s->h * 0.5f);
     }
 
@@ -2207,7 +2416,11 @@ static void ListImageFiles(const std::wstring& dir, std::vector<std::wstring>& o
     FindClose(hFind);
 }
 
-static void LoadImageFolder(const std::wstring& dir, bool isBlock, int maxCount, int size)
+// 图片属于哪一类 —— 决定它的落点文件被当成什么用
+enum AssetCategory { ASSET_EXPLOSIVE = 0, ASSET_BLOCK, ASSET_BUILDING };
+
+static void LoadImageFolder(const std::wstring& dir, int category,
+                            int maxCount, int size)
 {
     if (maxCount <= 0) return;
 
@@ -2243,9 +2456,10 @@ static void LoadImageFolder(const std::wstring& dir, bool isBlock, int maxCount,
         asset->frameCount = raw->GetFrameCount(&FrameDimensionTime);
         if (asset->frameCount == 0) asset->frameCount = 1;
         asset->frame = 0;
-        asset->life  = isBlock ? BLOCK_STAY_SEC : EXPLOSIVE_LIFE_SEC;
+        asset->life  = (category == ASSET_BLOCK) ? BLOCK_STAY_SEC : EXPLOSIVE_LIFE_SEC;
         asset->size  = size;
-        asset->isBlock = isBlock;
+        asset->isBlock    = (category == ASSET_BLOCK);
+        asset->isBuilding = (category == ASSET_BUILDING);
 
         ReadFrameDelays(*asset);
         ComputeAssetLayout(*asset);
@@ -2268,18 +2482,25 @@ static void LoadImages()
 {
     const std::wstring imgDir = ExeDir() + L"\\images";
 
+    // 顺序有讲究: "left" 是用 g_assets.size() 算的, 所以爆炸物必须第一个读。
     // 爆炸物: 先读 images\explosives, 再读 images 根目录(老版本图片留在那里)
     if (EXPLOSIVES_ENABLED) {
-        LoadImageFolder(imgDir + L"\\explosives", false,
+        LoadImageFolder(imgDir + L"\\explosives", ASSET_EXPLOSIVE,
                         EXPLOSIVE_MAX_IMAGES, EXPLOSIVE_SIZE);
         const int left = EXPLOSIVE_MAX_IMAGES - (int)g_assets.size();
         if (left > 0)
-            LoadImageFolder(imgDir, false, left, EXPLOSIVE_SIZE);
+            LoadImageFolder(imgDir, ASSET_EXPLOSIVE, left, EXPLOSIVE_SIZE);
     }
 
     // 方块
     if (BLOCKS_ENABLED)
-        LoadImageFolder(imgDir + L"\\blocks", true, BLOCK_MAX_IMAGES, BLOCK_SIZE);
+        LoadImageFolder(imgDir + L"\\blocks", ASSET_BLOCK,
+                        BLOCK_MAX_IMAGES, BLOCK_SIZE);
+
+    // 建筑(地形, 只能手动放)
+    if (BUILDINGS_ENABLED)
+        LoadImageFolder(imgDir + L"\\buildings", ASSET_BUILDING,
+                        BUILDING_MAX_IMAGES, BUILDING_SIZE);
 }
 
 // ------------------------------------------------------------
@@ -2357,10 +2578,12 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lPa
     if (code == HC_ACTION && lParam) {
         const KBDLLHOOKSTRUCT* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            // 两个键撞在一起时以"方块键"为准 —— 生成文件里的注释提醒过别写一样
+            // 三个键各管一类。撞在一起时以"方块 > 爆炸物 > 建筑"为准 ——
+            // 生成文件里的注释提醒过别写一样。
             SpawnKind kind = SPAWN_KIND_COUNT;
             if (kb->vkCode == BLOCK_SPAWN_KEY_VK)          kind = SPAWN_BLOCK;
             else if (kb->vkCode == EXPLOSIVE_SPAWN_KEY_VK) kind = SPAWN_EXPLOSIVE;
+            else if (kb->vkCode == BUILDING_SPAWN_KEY_VK)  kind = SPAWN_BUILDING;
 
             if (kind != SPAWN_KIND_COUNT) {
                 const DWORD now = GetTickCount();
@@ -2483,12 +2706,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
     if (g_assets.empty()) {
         std::wstring msg =
             L"没有找到可用图片！\n\n"
-            L"请在 exe 同目录下建 images 文件夹，里面放两个子文件夹：\n"
-            L"    images\\blocks      方块   （不会自己爆炸）\n"
-            L"    images\\explosives  爆炸物 （有引信，到点爆炸）\n\n"
+            L"请在 exe 同目录下建 images 文件夹，里面放这些子文件夹：\n"
+            L"    images\\blocks      方块   （不会自己爆炸, 会自然下落）\n"
+            L"    images\\explosives  爆炸物 （有引信，到点爆炸）\n"
+            L"    images\\buildings   建筑   （可选: 地形, 只能手动放）\n\n"
             L"各放 1~" + std::to_wstring(BLOCK_MAX_IMAGES) + L" / " +
-            std::to_wstring(EXPLOSIVE_MAX_IMAGES) +
-            L" 张 png / jpg / bmp / gif / webp 图片，\n"
+            std::to_wstring(EXPLOSIVE_MAX_IMAGES) + L" / " +
+            std::to_wstring(BUILDING_MAX_IMAGES) +
+            L" 张 png / jpg / bmp / gif 图片，\n"
             L"放在 images 根目录里的图片按爆炸物处理。\n\n"
             L"爆炸物存活 " + std::to_wstring((int)EXPLOSIVE_LIFE_SEC) +
             L" 秒后爆炸；\n被以特别快的速度撞击会提前 " +
@@ -2549,15 +2774,16 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int)
 
         UpdateAnimations(dt);
 
-        // ---- 按配置的两个键在鼠标位置生成方块 / 爆炸物 ----
+        // ---- 按配置的三个键在鼠标位置生成方块 / 爆炸物 / 建筑 ----
         // 钩子回调里只记了位置和类别, 真正干活放在这里。
         // 鼠标坐标是屏幕坐标, 减去 overlay 原点换成合成缓冲坐标。
         if (MANUAL_SPAWN_ENABLED && g_spawnAtMouse) {
             g_spawnAtMouse = false;
-            SpawnFalling(true,
-                         (float)(g_spawnPoint.x - g_workX),
-                         (float)(g_spawnPoint.y - g_workY),
-                         g_spawnKind);
+            const float mx = (float)(g_spawnPoint.x - g_workX);
+            const float my = (float)(g_spawnPoint.y - g_workY);
+            // 建筑走自己那条路: 它不掉、不吃 MAX_FALLING, 也不能进精灵间碰撞
+            if (g_spawnKind == SPAWN_BUILDING) SpawnBuilding(mx, my);
+            else                               SpawnFalling(true, mx, my, g_spawnKind);
         }
 
         // ---- 自动随机下落生成 ----
