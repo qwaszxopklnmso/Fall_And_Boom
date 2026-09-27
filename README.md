@@ -653,21 +653,20 @@ BUILDING_BLAST_HITS = 3           # 挨几次爆炸后碎掉(0 = 永远炸不掉
 
 ## 版本号约定
 
-目前是 `1.0.x`：**一个版本号 = 一次已推送的修复或小功能**，每个版本都能在
+目前是 `1.x.y`：**一个'y'版本号 = 一次已推送的修复或小功能**，每个版本都能在
 [提交记录](https://github.com/qwaszxopklnmso/Fall_And_Boom/commits/main) 和 tag 里查到。
-
-下一次**大更新**（成组的新能力，不是零散修 bug）且已经做到基本无 bug 时，
-直接跳到 **`1.1.0`**，不再逐个走 `1.0.x`。
 
 ## AI 生成声明
 
 本项目的代码与文字 —— `main.cpp`、`build.bat`、本 README、发布说明 ——
-**均由 AI 生成**，qwaszxopklnm 负责提需求、测试与验收。
+**均由 AI 生成**，qwaszxopklnm 负责给图片资源、提需求、测试与验收。
 
 代码因此可能带有一些典型痕迹（注释偏多、防御性分支偏多、命名风格不统一），
 欢迎提 issue 指出。
 
 引用本项目时，请以 [LICENSE](LICENSE) 为准；AI 生成这一事实不改变授权方式。
+
+~~By Deepseek v4.1 Flash , With Deepseek Harness~~
 
 ## 许可证
 
